@@ -81,3 +81,62 @@ The following verification commands were executed and verified:
 
 - No business logic, tenant authentication, widget configuration, submission ingestion, rate limiting, or background workers have been implemented in Phase 0.
 - Database tables and migrations have not yet been created; these will be designed during Phase 1.
+
+---
+
+## Phase 1 — Design
+
+**Date**: October 5, 2026
+
+### Objective
+
+Establish the authoritative technical design specification, multi-tenancy model, relational database schema, index strategy, REST API contracts, submission ingestion pipeline, security boundaries, and behavioral test strategy in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) to serve as the strict contract for Phase 2 implementation.
+
+### AI Assistance
+
+Antigravity was utilized as an AI pair programming and development assistant during this phase to formulate architectural specifications, compose system ASCII diagrams, design relational database schemas and index strategies, specify RESTful API contracts, and draft behavioral test scenarios corresponding to the FlyRank probes. All architectural specifications, data boundaries, and design decisions are reviewed and approved by the developer.
+
+### Decisions Made & Architecture Decisions
+
+1. **Multi-Tenant Scoping**:
+   - Formulated a shared-process, shared-database multi-tenant architecture using logical `tenant_id` row-level discrimination.
+   - Mandatory repository boundary enforcement: every read, mutation, and delete operation across `widgets` and `submissions` must include `WHERE tenant_id = req.user.tenantId`.
+   - Cross-tenant access attempts return `404 Not Found` rather than `403 Forbidden` to prevent object existence enumeration.
+2. **Relational Database Design**:
+   - Defined PostgreSQL schema covering 6 core tables: `tenants`, `users`, `widgets`, `submissions`, `jobs`, and `job_failures`.
+   - Selected UUIDv4 for non-enumerable primary keys across all entities.
+   - Defined specialized indexing strategies: composite index `(tenant_id, created_at DESC)` for high-performance dashboard pagination, partial unique index `(widget_id, idempotency_key)` for duplicate prevention, and partial index `(queue, run_at) WHERE status = 'pending'` for lock-free background job polling (`FOR UPDATE SKIP LOCKED`).
+3. **Widget Lifecycle & Embed Model**:
+   - Defined script delivery via `<script src="http://localhost:4000/widget.js?id=..."></script>` with immutable asset caching (`Cache-Control: public, max-age=31536000, immutable`).
+   - Designed dynamic widget configuration fetching with ETag-based HTTP 304 validation and Shadow DOM/CSS namespace isolation to prevent host site style collisions.
+4. **Public Ingestion Pipeline**:
+   - Structured a 9-step ingestion pipeline: Origin/CORS check -> 16 KB payload size guard -> Zod schema validation -> In-memory sliding-window rate limiting -> Honeypot trap check (`_hp_title`) -> Idempotency evaluation -> Geo enrichment -> Atomic PostgreSQL persistence -> Background job dispatch.
+5. **CORS & Preflight Policy**:
+   - Prohibited wildcard `Access-Control-Allow-Origin: *` on submission endpoints; enforced dynamic allowlist matching against tenant-configured `widget.allowed_origins`.
+6. **Geo Enrichment Fallback**:
+   - Designed a strategy pattern with sequential failover: Provider A -> Provider B -> Graceful Nil Degradation (`geo_country = null`).
+   - Added strict 500ms abort timeouts on external calls; guaranteed that geo failures never abort or block lead submission persistence.
+7. **Asynchronous Background Jobs**:
+   - Designed a database-backed Transactional Outbox pattern (`jobs` table) with row locking (`FOR UPDATE SKIP LOCKED`).
+   - Defined exponential backoff retries (30s, 120s, 600s) up to 3 attempts, with permanent failures routed to `job_failures` dead-letter audit log.
+8. **FlyRank Behavioral Probes Specification**:
+   - Formulated test requirements directly targeting the core probes: valid cross-origin submission, malformed/oversized rejection (413/400), rate limit burst & recovery (429), geo provider fallback & degradation, background webhook failure & retry durability, and honeypot rejection.
+9. **Explicit Non-Goals**:
+   - Explicitly excluded paid infrastructure, real CDNs, Kubernetes, microservices, Redis, Kafka, heavy frontend frameworks, third-party CAPTCHAs, and unnecessary AI features to keep the capstone maintainable and explainable.
+
+### Verification Performed
+
+1. **Document Internal Consistency**:
+   - Verified that entity relationships (`users` -> `tenants` -> `widgets` -> `submissions`) match API contracts and repository filtering semantics.
+   - Verified that all six tables have defined columns, types, primary keys, foreign keys, and indexes.
+   - Verified that all 6 FlyRank behavioral probes are addressed with specific failure and success semantics.
+2. **Codebase Health Checks**:
+   - `npm run typecheck` (`tsc --noEmit`) -> Exit 0 (zero errors).
+   - `npm run lint` (`eslint .`) -> Exit 0 (zero errors, zero warnings).
+   - `npm test` (`vitest run`) -> Exit 0 (1 test file passed, 1 test passed).
+   - `npm run build` (`tsc`) -> Exit 0 (`dist/` build verified).
+
+### Known Limitations
+
+- Architecture and design phase only.
+- No business logic, migrations, database tables, widget rendering scripts, submission endpoints, or background workers have been implemented yet.

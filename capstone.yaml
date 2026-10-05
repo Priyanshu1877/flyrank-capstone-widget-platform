@@ -1,6 +1,6 @@
 name: flyrank-capstone-widget-platform
 title: Embeddable Widget & Lead-Capture Platform
-phase: 'Phase 0 - Project Foundation'
+phase: 'Phase 1 - Design'
 track: Backend AI Engineering
 language: TypeScript
 runtime: Node.js
@@ -16,5 +16,6 @@ health_endpoint: /health
 status: in-progress
 completed_phases:
   - phase_0
+  - phase_1_design
 features_implemented:
   - minimal_health_check

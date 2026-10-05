@@ -6,22 +6,23 @@ The FlyRank Embeddable Widget & Lead-Capture Platform is a multi-tenant backend 
 
 ## Current Status
 
-**Phase 0 — Project Foundation**
+**Phase 1 — Technical Architecture & Design Completed**
 
-The repository is currently at the foundational setup stage. No business logic (authentication, widget CRUD, submission handling, rate limiting, or background workers) has been implemented yet. This phase establishes the environment, directory layout, tooling, containerized database, and a baseline health check endpoint.
+The repository contains the foundation and the authoritative architectural design specification for Phase 2 implementation. In accordance with Phase 1 constraints, no business logic, database migrations, authentication logic, widget rendering, submission handlers, or background workers have been implemented yet.
 
-## Planned Architecture
+## System Architecture & Specifications
 
-The planned system comprises:
+The complete, authoritative system architecture, entity relationship schema, REST API contracts, public submission pipeline, multi-tenancy model, security boundaries, and behavioral test strategies are detailed in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
-- **Tenant Management & Authentication**: Secure JWT-based access for tenant administration.
-- **Widget Service**: Generation, customization, and public serving of lightweight embed snippets.
-- **Submission Gateway**: Public cross-origin endpoint with validation, rate limiting, and honeypot spam protection.
-- **Geo-Enrichment**: Asynchronous or synchronous IP geolocation resolution with multiple fallback providers.
-- **Relational Storage**: PostgreSQL database structured for multi-tenant isolation and fast analytical reporting.
-- **Async Processing**: Durable background task queues for alerts and webhook deliveries.
+Summary of planned components:
 
-A formal architecture specification will be produced in **Phase 1: Design**. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+- **Tenant Management & Authentication**: Secure JWT-based access for tenant administration with strict repository-level isolation.
+- **Widget Service**: Generation, customization, and public serving of lightweight embed snippets with versioning and HTTP caching.
+- **Public Submission Gateway**: Cross-origin endpoint with dynamic CORS matching, 16 KB payload limits, schema validation, rate limiting, and honeypot spam protection.
+- **Geo-Enrichment**: Strategy pattern with sequential fallback (Provider A -> Provider B -> Graceful Nil Degradation).
+- **Relational Storage**: PostgreSQL 16 schema with UUIDv4 primary keys, idempotency partial unique indexes, and tenant-scoped query performance indexes.
+- **Async Processing**: Transactional outbox job queue (`jobs` table) with worker row locking (`FOR UPDATE SKIP LOCKED`), exponential backoff retries, and dead-letter isolation (`job_failures`).
+- **Tenant Dashboard**: Scoped analytical endpoints for lead tracking, submission trends, and geographic breakdown.
 
 ## Tech Stack
 

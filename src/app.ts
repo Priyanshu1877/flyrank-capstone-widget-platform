@@ -6,16 +6,21 @@ import { requestIdMiddleware } from './middleware/request-id.middleware.js';
 import { authRouter } from './modules/auth/auth.routes.js';
 import { widgetDeliveryRouter } from './modules/widgets/widget-delivery.routes.js';
 import { widgetRouter } from './modules/widgets/widget.routes.js';
+import { submissionRouter } from './modules/submissions/submission.routes.js';
 
 export const createApp = (): Express => {
   const app = express();
 
   app.use(requestIdMiddleware);
-  app.use(
-    cors({
+  // Dynamic CORS: Public routes evaluate origins per-widget from DB; other routes use CORS_ALLOWED_ORIGINS
+  app.use((req, res, next) => {
+    if (req.path.startsWith('/api/v1/public') || req.path === '/widget.js') {
+      return next();
+    }
+    return cors({
       origin: env.CORS_ALLOWED_ORIGINS.split(',').map((origin) => origin.trim()),
-    }),
-  );
+    })(req, res, next);
+  });
   app.use(express.json({ limit: '16kb' }));
 
   // Minimal health check endpoint
@@ -25,6 +30,9 @@ export const createApp = (): Express => {
 
   // Public widget delivery endpoints (loader script & public config)
   app.use(widgetDeliveryRouter);
+
+  // Public lead submission endpoints (POST & OPTIONS /api/v1/public/submissions)
+  app.use(submissionRouter);
 
   // Authentication & Identity domain routes
   app.use('/api/v1/auth', authRouter);

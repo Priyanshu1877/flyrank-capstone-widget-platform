@@ -6,9 +6,9 @@ The FlyRank Embeddable Widget & Lead-Capture Platform is a multi-tenant backend 
 
 ## Current Status
 
-**Phase 2B — Widget Management & Delivery Completed**
+**Phase 2C-1 — Hardened Lead Submission Completed**
 
-Phase 2B is implemented and verified. The platform includes full tenant-scoped widget management CRUD, automatic version incrementing, embed snippet generation, public configuration endpoint with origin allowlisting and ETag revalidation (`304 Not Modified`), embeddable `widget.js` loader with safe DOM rendering (XSS protection via `textContent` and scoped CSS isolation), and comprehensive automated integration tests (47 tests passing).
+Phase 2C-1 is implemented and verified. The platform includes full cross-origin lead submission handling (`POST /api/v1/public/submissions`), CORS preflight (`OPTIONS`), dynamic origin allowlist validation, strict 16 KB request body limit enforcement (`413 PAYLOAD_TOO_LARGE`), widget-driven dynamic schema validation, and a PostgreSQL-backed idempotency engine (`Idempotency-Key` header with `201 Created`, replay `200 OK`, conflict `409 IDEMPOTENCY_CONFLICT`, and partial unique index duplicate prevention). 67 automated integration tests are passing with a 100% pass rate.
 
 ## System Architecture & Specifications
 
@@ -17,15 +17,22 @@ The complete, authoritative system architecture, entity relationship schema, RES
 Implemented & planned components:
 
 - **Tenant Management & Authentication (Implemented - Phase 2A)**: Secure JWT-based access for tenant administration with strict repository-level isolation.
-- **Relational Storage (Implemented - Phase 2A & 2B)**: PostgreSQL 16 schema with UUIDv4 primary keys, connection pooling, automated migrations (`001_identity_domain.sql`, `002_widget_domain.sql`).
+- **Relational Storage (Implemented - Phases 2A, 2B, 2C-1)**: PostgreSQL 16 schema with UUIDv4 primary keys, connection pooling, automated migrations (`001_identity_domain.sql`, `002_widget_domain.sql`, `003_submissions_domain.sql`).
 - **Widget Service & Delivery (Implemented - Phase 2B)**:
   - Tenant-scoped CRUD (`POST /api/v1/widgets`, `GET /api/v1/widgets`, `GET /api/v1/widgets/:id`, `PATCH /api/v1/widgets/:id`, `DELETE /api/v1/widgets/:id`).
   - Automatic version tracking on configuration updates.
-  - Soft deactivation on delete preserving future submission history.
+  - Soft deactivation on delete preserving historical submission integrity.
   - Dynamic embed snippet generation (`<script src="http://localhost:4000/widget.js?id=..."></script>`).
   - Public configuration endpoint (`GET /api/v1/public/widgets/:id/config`) with origin allowlist validation and ETag 304 revalidation.
   - Embeddable `widget.js` loader (`GET /widget.js?id=...`) rendering forms dynamically with standard DOM APIs (zero unsafe `innerHTML`) and CSS scoping.
-- **Public Submission Gateway (Planned Phase 2C)**: Cross-origin endpoint with dynamic CORS matching, 16 KB payload limits, schema validation, rate limiting, and honeypot spam protection.
+- **Public Submission Gateway (Implemented - Phase 2C-1)**:
+  - Public ingestion endpoint (`POST /api/v1/public/submissions`) and CORS preflight (`OPTIONS /api/v1/public/submissions`).
+  - Origin allowlist validation against widget `allowed_origins` (no wildcard `*` CORS).
+  - 16 KB body payload guard returning HTTP `413 PAYLOAD_TOO_LARGE`.
+  - Dynamic field schema validation against `widget.fieldsConfig` (required presence, type checking, unconfigured field rejection).
+  - Partial unique index duplicate prevention on `(widget_id, idempotency_key)` with atomic replay (`200 OK`) and conflict detection (`409 IDEMPOTENCY_CONFLICT`).
+  - Server-authoritative tenant isolation: submission `tenant_id` resolved exclusively from PostgreSQL widget owner.
+- **Anti-Spam & Rate Limiting (Planned Phase 2C-2)**: Honeypot field inspection (`_hp_title`) and in-memory sliding-window rate limiters.
 - **Geo-Enrichment (Planned Phase 2D)**: Strategy pattern with sequential fallback (Provider A -> Provider B -> Graceful Nil Degradation).
 - **Async Processing (Planned Phase 2E)**: Transactional outbox job queue (`jobs` table) with worker row locking (`FOR UPDATE SKIP LOCKED`), exponential backoff retries, and dead-letter isolation (`job_failures`).
 - **Tenant Dashboard (Planned Phase 2F)**: Scoped analytical endpoints for lead tracking, submission trends, and geographic breakdown.
@@ -38,7 +45,7 @@ Implemented & planned components:
 - **Password Hashing**: bcryptjs (10 salt rounds)
 - **Authentication**: Stateless JSON Web Tokens (jsonwebtoken)
 - **Validation**: Zod
-- **Testing**: Vitest & Supertest (47 tests passing)
+- **Testing**: Vitest & Supertest (67 tests passing)
 - **Code Quality**: ESLint (Flat Config) & Prettier
 
 ## Local Development
@@ -212,6 +219,56 @@ Delivers embeddable JavaScript loader. Returns `Cache-Control: public, max-age=3
 
 ---
 
+### Public Lead Submission Endpoints
+
+#### 1. CORS Preflight
+
+`OPTIONS /api/v1/public/submissions`
+
+- Handles preflight checks for cross-origin lead submissions.
+- Checks origin against widget allowlists in PostgreSQL.
+- Disallowed origins receive HTTP `403 FORBIDDEN` and omit CORS headers.
+- Allowed origins receive HTTP `204 No Content` with `Access-Control-Allow-Origin: <origin>`, `Access-Control-Allow-Methods: POST, OPTIONS`, and `Access-Control-Allow-Headers: Content-Type, Idempotency-Key, x-widget-id`.
+
+#### 2. Ingest Lead Submission
+
+`POST /api/v1/public/submissions`
+
+- Accepts cross-origin form submissions.
+- **Headers**:
+  - `Content-Type: application/json`
+  - `Idempotency-Key: <unique-client-key>` (optional, enforces duplicate prevention)
+  - `Origin: <host-origin>` (validated against widget `allowed_origins`)
+- **Body**:
+  ```json
+  {
+    "widgetId": "10b4d283-ea2e-4e16-ad1b-2e79c3db6665",
+    "data": {
+      "name": "Jane Doe",
+      "email": "jane@example.com",
+      "message": "Interested in enterprise plan"
+    }
+  }
+  ```
+- **Responses**:
+  - `201 Created`: Fresh submission persisted.
+    ```json
+    {
+      "status": "success",
+      "submissionId": "uuid-here",
+      "createdAt": "2026-10-05T...",
+      "receivedAt": "2026-10-05T..."
+    }
+    ```
+  - `200 OK` (Idempotent Replay): Duplicate request with identical key and payload replays previous result with `"idempotentReplay": true`.
+  - `400 Bad Request` (`VALIDATION_ERROR`): Missing required fields, invalid email format, unknown/unconfigured fields, or malformed JSON.
+  - `403 Forbidden` (`FORBIDDEN`): Request origin is not permitted by the widget's allowed origins allowlist.
+  - `404 Not Found` (`NOT_FOUND`): Non-existent or inactive widget.
+  - `409 Conflict` (`IDEMPOTENCY_CONFLICT`): Idempotency key previously used with differing payload values.
+  - `413 Payload Too Large` (`PAYLOAD_TOO_LARGE`): Request body exceeds 16 KB boundary limit.
+
+---
+
 ## Local Demo
 
 A sample host page is provided in [`demo/index.html`](demo/index.html) to demonstrate cross-origin widget delivery:
@@ -220,9 +277,9 @@ A sample host page is provided in [`demo/index.html`](demo/index.html) to demons
    ```bash
    npm run dev
    ```
-2. In a separate terminal, serve the `demo` directory on port 5000 (e.g. using Python or `npx serve`):
+2. In a separate terminal, serve the `demo` directory on port 5000 (e.g. using Python or `npm run demo:serve`):
    ```bash
-   python -m http.server 5000 --directory demo
+   npm run demo:serve
    ```
 3. Open `http://localhost:5000` in your browser.
 4. The page will fetch the widget configuration from `http://localhost:4000/api/v1/public/widgets/<id>/config` and render the isolated, styled lead form seamlessly.
@@ -238,21 +295,24 @@ flyrank-capstone-widget-platform/
 │   ├── middleware/     # Auth, error, tenant-context, and request-id middleware
 │   ├── modules/
 │   │   ├── auth/       # Identity, bcrypt, and JWT services & routes
-│   │   └── widgets/    # Widget domain: types, schemas, repo, service, loader, routes
+│   │   ├── widgets/    # Widget domain: types, schemas, repo, service, loader, routes
+│   │   └── submissions/# Submission domain: types, schemas, repo, service, routes
 │   ├── shared/         # Database pool, migrations, and shared types
 │   ├── app.ts          # Express application initialization and route mounting
 │   └── server.ts       # Server entrypoint and lifecycle listener
-├── tests/              # Test suites (Vitest / Supertest)
+├── tests/              # Test suites (Vitest / Supertest - 67 tests passing)
 │   ├── health.test.ts
+│   ├── db.test.ts
 │   ├── auth.test.ts
 │   ├── tenant-isolation.test.ts
 │   ├── widget-crud.test.ts
-│   └── widget-delivery.test.ts
+│   ├── widget-delivery.test.ts
+│   └── submissions.test.ts
 ├── db/
-│   ├── migrations/     # 001_identity_domain.sql, 002_widget_domain.sql
+│   ├── migrations/     # 001_identity_domain.sql, 002_widget_domain.sql, 003_submissions_domain.sql
 │   └── migrate.ts      # Automated database migration runner
 ├── docs/               # Architectural documentation (ARCHITECTURE.md)
-├── demo/               # Cross-origin client test harness (index.html)
+├── demo/               # Cross-origin client test harness (index.html, serve.js)
 ├── docker-compose.yml  # Local PostgreSQL service definition
 ├── .env.example        # Reference environment variables
 ├── package.json        # Dependencies and execution scripts
@@ -280,5 +340,5 @@ The project uses a typed configuration schema in [`src/config/env.ts`](src/confi
 
 ## Limitations
 
-This is **Phase 2B**. Only Identity (Phase 2A) and Widget Management & Delivery (Phase 2B) are implemented.
-Public submission ingestion, rate limiting, honeypot filters, geo-location enrichment, background workers, and dashboard analytics are deferred to subsequent phases.
+This is **Phase 2C-1**. Identity (Phase 2A), Widget Management & Delivery (Phase 2B), and Hardened Lead Submission Persistence & Idempotency (Phase 2C-1) are implemented.
+Rate limiting, honeypot spam filters, geo-location enrichment, background workers, and dashboard analytics are deferred to subsequent phases.

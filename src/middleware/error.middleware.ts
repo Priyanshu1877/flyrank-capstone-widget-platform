@@ -21,6 +21,21 @@ export const errorHandler = (
     return;
   }
 
+  // Handle entity too large (payload exceeds 16 KB)
+  if (
+    ('type' in err && (err as { type: string }).type === 'entity.too.large') ||
+    ('status' in err && (err as { status: number }).status === 413)
+  ) {
+    res.status(413).json({
+      error: {
+        code: 'PAYLOAD_TOO_LARGE',
+        message: 'Request payload exceeds the 16 KB size limit',
+        requestId,
+      },
+    });
+    return;
+  }
+
   // Handle Zod or body parser JSON syntax errors
   if ('type' in err && (err as { type: string }).type === 'entity.parse.failed') {
     res.status(400).json({

@@ -303,3 +303,94 @@ Antigravity was used as an AI pair programming and development assistant to writ
 
 - Phase 2B only implements widget management and delivery.
 - Public lead submissions, submission ingestion pipeline, rate limiting, honeypot traps, geo-location enrichment, background workers, and dashboard APIs are deferred to subsequent phases.
+
+---
+
+## Phase 2C-1 — Hardened Lead Submission
+
+**Date**: October 5, 2026
+
+### Objective
+
+Implement the hardened lead submission pipeline: database schema migration for `submissions`, public submission API (`POST /api/v1/public/submissions`), CORS preflight (`OPTIONS`), dynamic per-widget origin allowlist validation, dynamic schema validation against `widget.fieldsConfig`, 16 KB payload size boundary guard, database-backed atomic idempotency duplicate prevention, and comprehensive automated integration testing.
+
+### AI Assistance
+
+Antigravity was utilized as an AI pair programming and development assistant during this phase to author the SQL migration (`003_submissions_domain.sql`), construct domain types (`submission.types.ts`), validation schemas (`submission.schema.ts`), repository abstractions (`submission.repository.ts`), service orchestration (`submission.service.ts`), router controllers (`submission.routes.ts`), and 20 automated integration tests (`tests/submissions.test.ts`). All code was reviewed, validated, and verified.
+
+### Implementation Decisions
+
+1. **Database Schema (`db/migrations/003_submissions_domain.sql`)**:
+   - Created `submissions` table with UUIDv4 primary key (`gen_random_uuid()`), foreign keys to `tenants(id) ON DELETE CASCADE` and `widgets(id) ON DELETE CASCADE`.
+   - Included `idempotency_key` (TEXT NULL), `payload` (JSONB NOT NULL), `ip_address`, `user_agent`, `origin`, `geo_country`, `geo_city`, `geo_provider` (all NULL for now), and `created_at`.
+   - Created partial unique index `idx_submissions_widget_idempotency` ON `(widget_id, idempotency_key) WHERE idempotency_key IS NOT NULL`.
+   - Added query indexes for `tenant_id`, `widget_id`, `created_at DESC`, and composite `(tenant_id, created_at DESC)`.
+2. **Atomic Idempotency Engine & Race Condition Defense**:
+   - Request `Idempotency-Key` header drives duplicate prevention.
+   - Insert statement uses `INSERT ... ON CONFLICT (widget_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING`.
+   - **First Request**: Row is created and returned with HTTP `201 Created`.
+   - **Identical Replay**: If `(widget_id, idempotency_key)` exists, the server retrieves the original row, performs a deep key-order-agnostic payload comparison, and replays the original success response (`{ status: "success", submissionId, ... , idempotentReplay: true }`) with zero duplicate database rows.
+   - **Conflicting Payload**: If the same key is reused with differing payload values, the server returns HTTP `409 IDEMPOTENCY_CONFLICT`.
+   - **Scope Independence**: The same `Idempotency-Key` across distinct widgets operates independently.
+   - **Concurrent Safety**: Concurrent identical requests resolve safely at the PostgreSQL index level; exactly one row is persisted.
+3. **Dynamic CORS & Origin Allowlist**:
+   - The server inspects the requesting `Origin` and compares it against the resolved widget's `allowed_origins`.
+   - Allowed origins receive `Access-Control-Allow-Origin: <origin>` and appropriate CORS headers.
+   - Disallowed origins are rejected with HTTP `403 FORBIDDEN` and CORS headers are omitted. Wildcard `*` is prohibited.
+   - `OPTIONS /api/v1/public/submissions` handles browser preflight requests.
+4. **Dynamic Field Validation**:
+   - Incoming `data` fields are validated against `widget.fieldsConfig`.
+   - Required fields are enforced; empty strings/missing keys are rejected with HTTP `400 VALIDATION_ERROR`.
+   - Field types (`text`, `email`, `textarea`) are verified; emails are validated using Zod's RFC-compliant parser.
+   - Unknown or unconfigured fields are rejected to prevent parameter pollution.
+5. **16 KB Payload Size Guard**:
+   - The body parser limits incoming requests to 16 KB.
+   - Handled via `errorHandler` mapping `entity.too.large` / status 413 to HTTP `413 PAYLOAD_TOO_LARGE`.
+6. **Server-Authoritative Tenant Isolation**:
+   - Submissions derive `tenant_id` solely from the database widget record (`widget.tenantId`).
+   - Any client-supplied `tenant_id` in request body or headers is ignored and cannot overwrite the owning tenant.
+7. **Privacy & Information Protection**:
+   - Public submission responses contain only safe identifiers (`submissionId`, `createdAt`, `receivedAt`).
+   - Internal database details, tenant IDs, IP addresses, and user-agent strings are excluded from API responses.
+
+### Database Changes
+
+- Applied `db/migrations/003_submissions_domain.sql` using `npm run db:migrate`.
+- Created `submissions` table and 5 indexes including `idx_submissions_widget_idempotency`.
+
+### Verification Performed
+
+1. **Database Migration**:
+   - `npm run db:migrate` -> Applied `003_submissions_domain.sql` successfully.
+2. **Type Checking & Linting**:
+   - `npm run typecheck` (`tsc --noEmit`) -> Exit 0 (zero errors).
+   - `npm run lint` (`eslint .`) -> Exit 0 (zero errors, zero warnings).
+   - `npm run format:check` (`prettier --check .`) -> Exit 0 (all files formatted).
+3. **Automated Integration Test Suite**:
+   - `npm test` (`vitest run`):
+     - `tests/health.test.ts` (1 test passed)
+     - `tests/db.test.ts` (2 tests passed)
+     - `tests/auth.test.ts` (13 tests passed)
+     - `tests/tenant-isolation.test.ts` (5 tests passed)
+     - `tests/widget-crud.test.ts` (15 tests passed)
+     - `tests/widget-delivery.test.ts` (11 tests passed)
+     - `tests/submissions.test.ts` (20 tests passed)
+     - Total: **7 test files, 67 tests passed (100% pass rate)** in 1.35s.
+4. **Production Build**:
+   - `npm run build` (`tsc`) -> Exit 0 (`dist/` generated successfully).
+5. **Live Manual End-to-End Verification (Probes A through F)**:
+   - Started backend server on port 4000.
+   - **A. Valid cross-origin submission**: `POST` from `http://localhost:5000` -> HTTP 201 Created, `Access-Control-Allow-Origin: http://localhost:5000`.
+   - **B. Disallowed origin rejection**: `POST` from `http://malicious-site.com` -> HTTP 403 Forbidden, CORS headers omitted.
+   - **C. First idempotent request**: `POST` with `Idempotency-Key` -> HTTP 201 Created with new `submissionId`.
+   - **D. Repeated identical request**: Repeated with same key and payload -> HTTP 200 OK, same `submissionId`, `idempotentReplay: true`.
+   - **E. Same key + changed payload**: Repeated with changed name -> HTTP 409 Conflict (`IDEMPOTENCY_CONFLICT`).
+   - **F. Oversized request**: Payload exceeding 16 KB -> HTTP 413 Payload Too Large (`PAYLOAD_TOO_LARGE`).
+6. **Git Security & Secret Audit**:
+   - Confirmed `.env` is ignored by Git and never staged.
+   - Scanned diff for credentials, tokens, or private data — zero secrets present.
+
+### Known Limitations
+
+- Phase 2C-1 implements lead submission persistence and idempotency.
+- Rate limiting, honeypot spam protection, geo-location enrichment, background workers, and dashboard analytics are deferred to subsequent phases.

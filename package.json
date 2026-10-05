@@ -14,7 +14,9 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "demo:seed": "tsx db/seed/demo-seed.ts",
+    "demo:serve": "node demo/serve.js"
   },
   "keywords": [
     "flyrank",

@@ -48,3 +48,15 @@ export class ConflictError extends AppError {
     super(409, 'CONFLICT', message);
   }
 }
+
+export class IdempotencyConflictError extends AppError {
+  constructor(message = 'Idempotency key was previously used with a different payload.') {
+    super(409, 'IDEMPOTENCY_CONFLICT', message);
+  }
+}
+
+export class PayloadTooLargeError extends AppError {
+  constructor(message = 'Request payload exceeds the 16 KB size limit') {
+    super(413, 'PAYLOAD_TOO_LARGE', message);
+  }
+}

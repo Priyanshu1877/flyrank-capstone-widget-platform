@@ -111,9 +111,9 @@
         mount.appendChild(s);
       }
 
-      // Auto-load if widget id is present in URL hash or query e.g. index.html?id=UUID
+      // Auto-load if widget id is present in URL hash or query e.g. index.html?id=UUID, fallback to seeded demo widget
       var urlParams = new URLSearchParams(window.location.search);
-      var defaultId = urlParams.get('id');
+      var defaultId = urlParams.get('id') || '10b4d283-ea2e-4e16-ad1b-2e79c3db6665';
       if (defaultId) {
         document.getElementById('widgetIdInput').value = defaultId;
         injectWidget();

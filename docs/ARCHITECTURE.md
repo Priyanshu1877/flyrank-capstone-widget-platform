@@ -1131,3 +1131,48 @@ To maintain a lean, robust, and reviewable architecture for the capstone, the fo
    - `GET /widget.js?id=<widgetId>` validates the `id` as a UUID to prevent path traversal or filesystem probing.
    - The embedded JavaScript dynamically builds DOM elements using standard DOM APIs (`document.createElement`, `element.textContent`, `element.setAttribute`) and avoids `innerHTML` completely to eliminate XSS risks from tenant-configured field labels or values.
    - Scoped container `div[data-flyrank-widget="<id>"]` isolates CSS rules from host page styles.
+
+---
+
+## Phase 2C-1 Implementation Notes
+
+### Hardened Lead Submission Architecture & Design Decisions
+
+1. **Database Schema (`submissions`)**:
+   - `id`: UUID Primary Key (`gen_random_uuid()`).
+   - `tenant_id`: UUID Foreign Key referencing `tenants(id) ON DELETE CASCADE`.
+   - `widget_id`: UUID Foreign Key referencing `widgets(id) ON DELETE CASCADE`.
+   - `idempotency_key`: TEXT NULL.
+   - `payload`: JSONB NOT NULL storing validated lead fields.
+   - `ip_address`: TEXT NULL.
+   - `user_agent`: TEXT NULL.
+   - `origin`: TEXT NULL.
+   - `geo_country`, `geo_city`, `geo_provider`: TEXT NULL (intentionally deferred to Phase 2D).
+   - `created_at`: TIMESTAMPTZ NOT NULL DEFAULT NOW().
+   - **Partial Unique Index**: `idx_submissions_widget_idempotency` ON `(widget_id, idempotency_key) WHERE idempotency_key IS NOT NULL`.
+   - Auxiliary Indexes: `idx_submissions_tenant_id`, `idx_submissions_widget_id`, `idx_submissions_created_at`, `idx_submissions_tenant_created`.
+
+2. **Public Submission Gateway & CORS**:
+   - Route: `POST /api/v1/public/submissions` and `OPTIONS /api/v1/public/submissions`.
+   - Dynamic per-widget CORS: The server resolves the target `widgetId`, verifies active status, and matches the client's `Origin` header against `widget.allowed_origins`.
+   - Disallowed origins receive HTTP `403 FORBIDDEN` and zero CORS allow headers. Wildcard `Access-Control-Allow-Origin: *` is strictly prohibited.
+   - Tenant isolation: The submission's `tenant_id` is derived exclusively from the widget owner in PostgreSQL; caller-supplied tenant identifiers are completely ignored.
+
+3. **Dynamic Field Validation**:
+   - The incoming `data` payload is validated against `widget.fieldsConfig`.
+   - Required fields are strictly enforced (missing/blank returns `400 VALIDATION_ERROR`).
+   - Field types (`text`, `email`, `textarea`) are verified, with email addresses checked for RFC-compliant formatting.
+   - Unconfigured/unknown fields in `data` are rejected to prevent parameter pollution.
+
+4. **16 KB Body Size Limit**:
+   - The global JSON parser and error handler enforce a strict 16 KB request body limit.
+   - Payloads exceeding 16 KB are intercepted and return HTTP `413 PAYLOAD_TOO_LARGE` with the standard error response envelope.
+
+5. **Atomic Idempotency Engine**:
+   - Driven by the HTTP request header `Idempotency-Key`.
+   - Safe race condition handling: Persists via `INSERT ... ON CONFLICT (widget_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING`.
+   - **New Key**: Creates submission row and returns HTTP `201 Created`.
+   - **Identical Replay**: Detects conflict, verifies that incoming payload deeply matches the existing submission payload, and replays the original success response (`{ status: "success", submissionId, ... , idempotentReplay: true }`) with zero duplicate database rows.
+   - **Conflicting Payload**: If the same key is reused with differing field values, returns HTTP `409 IDEMPOTENCY_CONFLICT`.
+   - **Scope Independence**: The same `Idempotency-Key` used across distinct widgets operates independently.
+   - **Omitted Key**: Submissions without an idempotency key succeed normally, creating independent rows.

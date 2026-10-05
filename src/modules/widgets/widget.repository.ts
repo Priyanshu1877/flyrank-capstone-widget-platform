@@ -170,6 +170,22 @@ export class WidgetRepository {
     if (res.rows.length === 0) return null;
     return mapRowToWidget(res.rows[0]);
   }
+
+  /**
+   * Check if any active widget permits the given origin
+   */
+  async hasActiveWidgetWithOrigin(origin: string, client?: PoolClient): Promise<boolean> {
+    const text = `
+      SELECT 1
+      FROM widgets
+      WHERE is_active = TRUE AND $1 = ANY(allowed_origins)
+      LIMIT 1;
+    `;
+    const params = [origin];
+    const res = client ? await client.query(text, params) : await query(text, params);
+
+    return res.rows.length > 0;
+  }
 }
 
 export const widgetRepository = new WidgetRepository();

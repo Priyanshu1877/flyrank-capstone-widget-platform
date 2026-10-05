@@ -453,7 +453,12 @@
         list.appendChild(item);
       });
     } catch (err) {
-      list.innerHTML = `<p class="empty-subtext" style="color: var(--danger)">Unable to load jobs: ${err.message}</p>`;
+      list.innerHTML = '';
+      const errP = document.createElement('p');
+      errP.className = 'empty-subtext';
+      errP.style.color = 'var(--danger)';
+      errP.textContent = `Unable to load jobs: ${err.message}`;
+      list.appendChild(errP);
     }
   }
 
@@ -551,7 +556,12 @@
         widgetListEl.appendChild(item);
       });
     } catch (err) {
-      widgetListEl.innerHTML = `<p class="empty-subtext" style="color: var(--danger)">Unable to load widgets: ${err.message}</p>`;
+      widgetListEl.innerHTML = '';
+      const errP = document.createElement('p');
+      errP.className = 'empty-subtext';
+      errP.style.color = 'var(--danger)';
+      errP.textContent = `Unable to load widgets: ${err.message}`;
+      widgetListEl.appendChild(errP);
     }
   }
 

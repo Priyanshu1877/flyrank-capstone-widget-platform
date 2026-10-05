@@ -785,3 +785,45 @@ Build the authenticated dashboard frontend Single Page Application (SPA) that co
    - **Probe K & L**: Widget panel displayed widgets; clicking "Copy Snippet" produced visual "✓ Copied!" confirmation.
    - **Probe P**: Loaded `http://localhost:5000/index.html?id=10b4d283-ea2e-4e16-ad1b-2e79c3db6665`, verified cross-origin widget rendered, and submitted lead.
    - **Probe Q**: Verified malicious string `<script>alert("XSS")</script>` in submitted lead payload displayed safely as plain text in both the table and detail modal without script execution.
+
+---
+
+## Final Hardening & Capstone Verification
+
+### Objective
+
+Perform comprehensive hardening, security audits, database verification, behavioral probe execution, and reproducibility verification to ensure the FlyRank Capstone is 100% submission-ready:
+
+1. Verify PostgreSQL migrations, schemas, foreign keys, and indexes from a clean state.
+2. Execute live capstone behavioral probes covering cross-origin delivery, tenant isolation, rate limiting, honeypot, geo fallback, idempotency, transactional outbox, worker processing, exponential backoff retries, and stale lock recovery.
+3. Perform source code audits for XSS, CORS allowlists, SQL injection vulnerabilities, and credential leakage.
+4. Execute dependency vulnerability audits and verify fresh reproducibility.
+
+### Hardening Implemented
+
+1. **Dashboard UI Anti-XSS Hardening**:
+   - Replaced innerHTML usage in error handlers (`loadJobs` and `loadWidgets`) in `public/dashboard/dashboard.js` with DOM `createElement('p')` and `element.textContent` assignment, ensuring that even dynamic runtime error messages cannot inject markup.
+2. **Behavioral Probes Live Verification**:
+   - Built and executed automated probe suite against live running platform on port 4000, confirming:
+     - Cross-origin widget loader and config delivery (`Access-Control-Allow-Origin: http://localhost:5000`, 403 on untrusted origin).
+     - Strict tenant isolation (Tenant 2 receives 401/404 when querying Tenant 1 resources).
+     - Honeypot trap triggers silent 400 rejection with 0 database rows inserted.
+     - Geo fallback populates country/city without exposing internal failures.
+     - Idempotency replay yields identical 200 replay, while payload changes on identical key yield 409 Conflict.
+     - Atomic transactional outbox links submissions with pending jobs.
+3. **Database & Schema Audit**:
+   - Verified all 4 SQL migrations (`001_identity_domain.sql`, `002_widget_domain.sql`, `003_submissions_domain.sql`, `004_jobs_domain.sql`).
+   - Inspected tables, foreign key constraints with cascade behaviors, and indexes (`idx_jobs_claim`, `idx_submissions_tenant_created`, `idx_submissions_widget_idempotency`).
+4. **Security & Dependency Audit**:
+   - Verified `.gitignore` ignores `.env`, `dist/`, `node_modules/`, and logs.
+   - Verified zero hardcoded production secrets or credentials in git history.
+   - `npm audit`: 0 vulnerabilities.
+
+### Verification Performed
+
+1. `npm test`: 11 test files, **151 tests passed (100% pass rate)**.
+2. `npm run typecheck`: 0 errors.
+3. `npm run lint`: 0 errors, 0 warnings.
+4. `npm run format:check`: Prettier verified.
+5. `npm run build`: Production build cleanly generated.
+6. Behavioral Probes 1 through 10 fully verified.

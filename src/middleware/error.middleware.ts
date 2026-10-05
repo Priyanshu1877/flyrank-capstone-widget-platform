@@ -10,6 +10,16 @@ export const errorHandler = (
   const requestId = (res.locals.requestId as string) || 'unknown';
 
   if (err instanceof AppError) {
+    if (
+      'retryAfterSeconds' in err &&
+      typeof (err as { retryAfterSeconds: number }).retryAfterSeconds === 'number'
+    ) {
+      res.setHeader(
+        'Retry-After',
+        String((err as { retryAfterSeconds: number }).retryAfterSeconds),
+      );
+    }
+
     res.status(err.statusCode).json({
       error: {
         code: err.code,

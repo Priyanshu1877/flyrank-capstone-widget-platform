@@ -1,6 +1,6 @@
 name: flyrank-capstone-widget-platform
 title: Embeddable Widget & Lead-Capture Platform
-phase: 'Phase 2C-1 - Hardened Lead Submission'
+phase: 'Phase 2C-2 - Abuse Protection & Geo Enrichment'
 track: Backend AI Engineering
 language: TypeScript
 runtime: Node.js
@@ -20,6 +20,7 @@ completed_phases:
   - phase_2a
   - phase_2b
   - phase_2c_1
+  - phase_2c_2
 features_implemented:
   - minimal_health_check
   - postgresql_connection_pool
@@ -39,6 +40,10 @@ features_implemented:
   - submission_cors_origin_allowlist
   - submission_schema_validation
   - submission_payload_limit_16kb
+  - rate_limiting_ip
+  - honeypot_spam_protection
+  - geo_provider_fallback
+  - geo_graceful_degradation
 feature_flags:
   widget_crud: true
   widget_delivery: true
@@ -48,8 +53,8 @@ feature_flags:
   origin_allowlist: true
   submission_ingestion: true
   submission_idempotency: true
-  rate_limiting: false
-  honeypot: false
-  geo_enrichment: false
+  rate_limiting: true
+  honeypot: true
+  geo_enrichment: true
   background_jobs: false
   dashboard: false

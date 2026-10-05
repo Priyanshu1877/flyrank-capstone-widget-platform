@@ -1176,3 +1176,85 @@ To maintain a lean, robust, and reviewable architecture for the capstone, the fo
    - **Conflicting Payload**: If the same key is reused with differing field values, returns HTTP `409 IDEMPOTENCY_CONFLICT`.
    - **Scope Independence**: The same `Idempotency-Key` used across distinct widgets operates independently.
    - **Omitted Key**: Submissions without an idempotency key succeed normally, creating independent rows.
+
+---
+
+## Phase 2C-2 Implementation Notes
+
+### Abuse Protection, Honeypot & Geo Enrichment Architecture
+
+1. **Submission Pipeline Execution Sequence**:
+   To prevent attackers and bots from forcing unnecessary CPU, database, or provider enrichment overhead, the submission handler executes in a strict order of increasing cost:
+
+   ```
+   Request
+     ↓
+   Request ID Assignment
+     ↓
+   16 KB Payload Boundary Check (413 if exceeded)
+     ↓
+   Widget Resolution & Active Status Check (404 if missing/inactive)
+     ↓
+   Origin / CORS Allowlist Validation (403 if disallowed)
+     ↓
+   Dynamic Field Validation against widget.fields_config (400 if invalid)
+     ↓
+   Rate Limiting Check (429 RATE_LIMIT_EXCEEDED if limit exceeded)
+     ↓
+   Honeypot Spam Trap Check (400 SPAM_DETECTED if trap populated)
+     ↓
+   Idempotency Verification (replays existing row with 200 OK without re-enriching)
+     ↓
+   Geo Enrichment Failover (Provider A → Provider B → NULL degradation)
+     ↓
+   PostgreSQL Durable Insertion (201 Created)
+   ```
+
+2. **Rate Limiting Engine**:
+   - **Algorithm**: In-Memory Sliding Window log tracking per client IP address. Request timestamps within the rolling window (default `60,000 ms` / 1 minute) are counted.
+   - **Threshold**: 60 requests per minute per client IP.
+   - **Multi-Widget Scope**: The rate limiter is keyed by client IP, not `(IP, widgetId)`. An abusive client cannot bypass throttling simply by cycling across different widget IDs.
+   - **429 Response Envelope**:
+     ```json
+     {
+       "error": {
+         "code": "RATE_LIMIT_EXCEEDED",
+         "message": "Too many requests",
+         "requestId": "<uuid>"
+       }
+     }
+     ```
+   - **Retry-After Header**: The HTTP response automatically includes a standards-compliant `Retry-After: <seconds>` header computed from the remaining lifetime of the oldest request in the sliding window.
+   - **Limitations**: In-memory rate limiting is bound to the single Node.js process. In multi-instance cluster deployments, an external store (e.g. Redis) or API Gateway / Cloud Armor rate limiter would be required. Redis was intentionally avoided in Phase 2C-2 to minimize infrastructure footprint in accordance with the capstone specifications.
+
+3. **Honeypot Spam Protection**:
+   - **Trap Fields**: Monitored via top-level fields `_hp_title` and `_website`. These fields are intentionally excluded from widget configuration forms and hidden via CSS from genuine users.
+   - **Detection Logic**: Automated spambots scanning and auto-filling HTML forms populate these hidden fields. Any submission where `_hp_title` or `_website` is provided as a non-empty string is classified as spam.
+   - **Response**: Returns HTTP `400 Bad Request` with `{ error: { code: "SPAM_DETECTED", message: "Submission rejected" } }`.
+   - **Zero Overhead**: Spam submissions are discarded immediately:
+     - No row is persisted to PostgreSQL `submissions`.
+     - Geo providers are never invoked.
+     - Outbox/background jobs are never scheduled.
+   - **Parameter Pollution Defense**: Honeypot fields cannot overwrite genuine lead attributes or internal columns (`tenant_id`, `widget_id`, `id`, `created_at`).
+
+4. **Geo Enrichment Architecture & Failover Chain**:
+   - **Interface (`IGeoProvider`)**:
+     ```typescript
+     interface IGeoProvider {
+       name: string;
+       lookup(ip: string): Promise<GeoLocation | null>;
+     }
+     ```
+   - **Provider A (`MockGeoProviderA`)**: Deterministic primary mock geo provider. Supports simulated `success`, `failure`, and `timeout` modes.
+   - **Provider B (`MockGeoProviderB`)**: Deterministic fallback mock geo provider. Invoked only when Provider A fails or times out.
+   - **Timeout Containment**: Provider calls are wrapped in a `Promise.race` bounded by a 500ms timeout guard (`timeoutMs`). Slow providers cannot exhaust connection pools or stall client submissions.
+   - **Graceful Nil-Degradation**: Lead capture is the mission-critical operation; geo enrichment is best-effort. If both Provider A and Provider B fail or time out:
+     - The submission proceeds without throwing an exception.
+     - `geo_country`, `geo_city`, and `geo_provider` are stored as `NULL` in the database.
+     - The endpoint returns HTTP `201 Created` with standard submission metadata.
+     - Zero internal provider exceptions, network traces, or API details leak to the client.
+
+5. **IP Trust & Security**:
+   - The application configures Express `trust proxy` securely (`loopback` in production, configurable for upstream reverse proxies like Cloudflare or Nginx).
+   - Arbitrary client-provided `X-Forwarded-For` headers are not blindly trusted from untrusted networks.
+   - Client IP addresses are never echoed back in API response bodies.

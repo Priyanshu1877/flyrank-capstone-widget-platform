@@ -17,6 +17,7 @@ export interface CreateSubmissionDto {
   widgetId: string;
   data: Record<string, unknown>;
   _hp_title?: string;
+  _website?: string;
 }
 
 export interface InsertSubmissionParams {
@@ -27,6 +28,9 @@ export interface InsertSubmissionParams {
   ipAddress?: string | null;
   userAgent?: string | null;
   origin?: string | null;
+  geoCountry?: string | null;
+  geoCity?: string | null;
+  geoProvider?: string | null;
 }
 
 export interface SubmissionResult {

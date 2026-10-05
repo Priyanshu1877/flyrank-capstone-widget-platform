@@ -6,9 +6,9 @@ The FlyRank Embeddable Widget & Lead-Capture Platform is a multi-tenant backend 
 
 ## Current Status
 
-**Phase 2C-1 — Hardened Lead Submission Completed**
+**Phase 2C-2 — Abuse Protection, Honeypot & Geo Enrichment Completed**
 
-Phase 2C-1 is implemented and verified. The platform includes full cross-origin lead submission handling (`POST /api/v1/public/submissions`), CORS preflight (`OPTIONS`), dynamic origin allowlist validation, strict 16 KB request body limit enforcement (`413 PAYLOAD_TOO_LARGE`), widget-driven dynamic schema validation, and a PostgreSQL-backed idempotency engine (`Idempotency-Key` header with `201 Created`, replay `200 OK`, conflict `409 IDEMPOTENCY_CONFLICT`, and partial unique index duplicate prevention). 67 automated integration tests are passing with a 100% pass rate.
+Phase 2C-2 is implemented and verified. The platform includes full server-side rate limiting per client IP (in-memory sliding window, HTTP `429 RATE_LIMIT_EXCEEDED` with `Retry-After` header, multi-widget IP lock), honeypot spam protection (`_hp_title` and `_website` hidden traps returning `400 SPAM_DETECTED` with zero DB persistence and zero provider invocation), and a robust geo-enrichment failover architecture (Mock Provider A primary, Mock Provider B fallback, 500ms timeout containment, and graceful nil-degradation storing `NULL` geo fields while guaranteeing lead capture returns `201 Created`). 84 automated integration tests are passing with a 100% pass rate.
 
 ## System Architecture & Specifications
 
@@ -17,7 +17,7 @@ The complete, authoritative system architecture, entity relationship schema, RES
 Implemented & planned components:
 
 - **Tenant Management & Authentication (Implemented - Phase 2A)**: Secure JWT-based access for tenant administration with strict repository-level isolation.
-- **Relational Storage (Implemented - Phases 2A, 2B, 2C-1)**: PostgreSQL 16 schema with UUIDv4 primary keys, connection pooling, automated migrations (`001_identity_domain.sql`, `002_widget_domain.sql`, `003_submissions_domain.sql`).
+- **Relational Storage (Implemented - Phases 2A, 2B, 2C-1, 2C-2)**: PostgreSQL 16 schema with UUIDv4 primary keys, connection pooling, automated migrations (`001_identity_domain.sql`, `002_widget_domain.sql`, `003_submissions_domain.sql`), storing lead payloads and resolved geo (`geo_country`, `geo_city`, `geo_provider`).
 - **Widget Service & Delivery (Implemented - Phase 2B)**:
   - Tenant-scoped CRUD (`POST /api/v1/widgets`, `GET /api/v1/widgets`, `GET /api/v1/widgets/:id`, `PATCH /api/v1/widgets/:id`, `DELETE /api/v1/widgets/:id`).
   - Automatic version tracking on configuration updates.
@@ -32,8 +32,14 @@ Implemented & planned components:
   - Dynamic field schema validation against `widget.fieldsConfig` (required presence, type checking, unconfigured field rejection).
   - Partial unique index duplicate prevention on `(widget_id, idempotency_key)` with atomic replay (`200 OK`) and conflict detection (`409 IDEMPOTENCY_CONFLICT`).
   - Server-authoritative tenant isolation: submission `tenant_id` resolved exclusively from PostgreSQL widget owner.
-- **Anti-Spam & Rate Limiting (Planned Phase 2C-2)**: Honeypot field inspection (`_hp_title`) and in-memory sliding-window rate limiters.
-- **Geo-Enrichment (Planned Phase 2D)**: Strategy pattern with sequential fallback (Provider A -> Provider B -> Graceful Nil Degradation).
+- **Anti-Spam & Abuse Protection (Implemented - Phase 2C-2)**:
+  - In-memory sliding-window rate limiting keyed by client IP (60 req/min), returning `429 RATE_LIMIT_EXCEEDED` with `Retry-After` header.
+  - Honeypot spam traps (`_hp_title`, `_website`) rejecting automated bots with `400 SPAM_DETECTED`, zero DB persistence, and zero geo overhead.
+- **Geo-Enrichment & Graceful Nil-Degradation (Implemented - Phase 2C-2)**:
+  - Provider strategy abstraction (`IGeoProvider`) with deterministic mock providers (Provider A primary, Provider B fallback).
+  - 500ms timeout containment via `Promise.race`.
+  - Non-critical best-effort degradation: if both providers fail or time out, `geo_country`, `geo_city`, and `geo_provider` remain `NULL` and lead capture still succeeds (`201 Created`).
+  - Idempotent replays safely skip geo-enrichment.
 - **Async Processing (Planned Phase 2E)**: Transactional outbox job queue (`jobs` table) with worker row locking (`FOR UPDATE SKIP LOCKED`), exponential backoff retries, and dead-letter isolation (`job_failures`).
 - **Tenant Dashboard (Planned Phase 2F)**: Scoped analytical endpoints for lead tracking, submission trends, and geographic breakdown.
 
@@ -45,7 +51,7 @@ Implemented & planned components:
 - **Password Hashing**: bcryptjs (10 salt rounds)
 - **Authentication**: Stateless JSON Web Tokens (jsonwebtoken)
 - **Validation**: Zod
-- **Testing**: Vitest & Supertest (67 tests passing)
+- **Testing**: Vitest & Supertest (84 tests passing)
 - **Code Quality**: ESLint (Flat Config) & Prettier
 
 ## Local Development
@@ -247,11 +253,12 @@ Delivers embeddable JavaScript loader. Returns `Cache-Control: public, max-age=3
       "name": "Jane Doe",
       "email": "jane@example.com",
       "message": "Interested in enterprise plan"
-    }
+    },
+    "_hp_title": ""
   }
   ```
 - **Responses**:
-  - `201 Created`: Fresh submission persisted.
+  - `201 Created`: Fresh submission persisted with resolved geo.
     ```json
     {
       "status": "success",
@@ -260,12 +267,14 @@ Delivers embeddable JavaScript loader. Returns `Cache-Control: public, max-age=3
       "receivedAt": "2026-10-05T..."
     }
     ```
-  - `200 OK` (Idempotent Replay): Duplicate request with identical key and payload replays previous result with `"idempotentReplay": true`.
+  - `200 OK` (Idempotent Replay): Duplicate request with identical key and payload replays previous result with `"idempotentReplay": true` (skipping geo-enrichment).
   - `400 Bad Request` (`VALIDATION_ERROR`): Missing required fields, invalid email format, unknown/unconfigured fields, or malformed JSON.
+  - `400 Bad Request` (`SPAM_DETECTED`): Honeypot trap field (`_hp_title` or `_website`) populated.
   - `403 Forbidden` (`FORBIDDEN`): Request origin is not permitted by the widget's allowed origins allowlist.
   - `404 Not Found` (`NOT_FOUND`): Non-existent or inactive widget.
   - `409 Conflict` (`IDEMPOTENCY_CONFLICT`): Idempotency key previously used with differing payload values.
   - `413 Payload Too Large` (`PAYLOAD_TOO_LARGE`): Request body exceeds 16 KB boundary limit.
+  - `429 Too Many Requests` (`RATE_LIMIT_EXCEEDED`): Client IP exceeded sliding-window rate limit (60 req/min). Returns `Retry-After` header.
 
 ---
 
@@ -296,18 +305,21 @@ flyrank-capstone-widget-platform/
 │   ├── modules/
 │   │   ├── auth/       # Identity, bcrypt, and JWT services & routes
 │   │   ├── widgets/    # Widget domain: types, schemas, repo, service, loader, routes
-│   │   └── submissions/# Submission domain: types, schemas, repo, service, routes
+│   │   └── submissions/# Submission domain: types, schemas, repo, service, rate-limiter, routes
+│   ├── providers/
+│   │   └── geo/        # Geo-enrichment strategy: IGeoProvider, MockProviderA, MockProviderB, GeoService
 │   ├── shared/         # Database pool, migrations, and shared types
 │   ├── app.ts          # Express application initialization and route mounting
 │   └── server.ts       # Server entrypoint and lifecycle listener
-├── tests/              # Test suites (Vitest / Supertest - 67 tests passing)
+├── tests/              # Test suites (Vitest / Supertest - 84 tests passing)
 │   ├── health.test.ts
 │   ├── db.test.ts
 │   ├── auth.test.ts
 │   ├── tenant-isolation.test.ts
 │   ├── widget-crud.test.ts
 │   ├── widget-delivery.test.ts
-│   └── submissions.test.ts
+│   ├── submissions.test.ts
+│   └── abuse-and-geo.test.ts
 ├── db/
 │   ├── migrations/     # 001_identity_domain.sql, 002_widget_domain.sql, 003_submissions_domain.sql
 │   └── migrate.ts      # Automated database migration runner
@@ -340,5 +352,5 @@ The project uses a typed configuration schema in [`src/config/env.ts`](src/confi
 
 ## Limitations
 
-This is **Phase 2C-1**. Identity (Phase 2A), Widget Management & Delivery (Phase 2B), and Hardened Lead Submission Persistence & Idempotency (Phase 2C-1) are implemented.
-Rate limiting, honeypot spam filters, geo-location enrichment, background workers, and dashboard analytics are deferred to subsequent phases.
+This is **Phase 2C-2**. Identity (Phase 2A), Widget Management & Delivery (Phase 2B), Hardened Lead Submission Persistence & Idempotency (Phase 2C-1), and Abuse Protection, Honeypot & Geo Enrichment with Graceful Degradation (Phase 2C-2) are implemented.
+Background workers, transactional outbox (`jobs`), job retry queues, dead-letter logging, and dashboard analytics are deferred to subsequent phases.

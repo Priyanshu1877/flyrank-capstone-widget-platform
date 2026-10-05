@@ -50,11 +50,7 @@ submissionRouter.post(
 
       // 2. Extract client request metadata
       const origin = req.headers.origin;
-      const ip =
-        (req.headers['x-forwarded-for'] as string)?.split(',')[0].trim() ||
-        req.ip ||
-        req.socket.remoteAddress ||
-        undefined;
+      const ip = req.ip || req.socket.remoteAddress || '127.0.0.1';
       const userAgent = req.headers['user-agent'];
       const idempotencyKey = req.headers['idempotency-key'] as string | undefined;
 

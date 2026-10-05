@@ -5,6 +5,8 @@ import {
   IdempotencyConflictError,
   NotFoundError,
   ConflictError,
+  RateLimitExceededError,
+  SpamDetectedError,
 } from '../../shared/errors.js';
 import {
   arePayloadsEqual,
@@ -13,6 +15,9 @@ import {
 } from './submission.schema.js';
 import { submissionRepository } from './submission.repository.js';
 import type { SubmissionResult } from './submission.types.js';
+import { submissionRateLimiter } from './rate-limiter.js';
+import { geoService } from '../../providers/geo/geo.service.js';
+import type { GeoLocation } from '../../providers/geo/geo.types.js';
 
 export interface SubmissionRequestMeta {
   origin?: string;
@@ -27,8 +32,11 @@ export class SubmissionService {
    * 1. Widget resolution & active state verification
    * 2. Origin validation against widget allowed_origins
    * 3. Dynamic schema validation against configured fields
-   * 4. Idempotency handling (first-time, replay, or conflict)
-   * 5. Persistence into PostgreSQL
+   * 4. Rate limiting (per-IP sliding window, before expensive work)
+   * 5. Honeypot anti-spam trap check (_hp_title or _website)
+   * 6. Idempotency evaluation (replay skips geo enrichment & insert)
+   * 7. Geo enrichment (Provider A -> Provider B fallback -> nil degradation)
+   * 8. Persistence into PostgreSQL
    */
   async submitLead(
     input: BaseSubmissionInput,
@@ -53,11 +61,62 @@ export class SubmissionService {
     // 3. Dynamic field validation
     const validatedData = validateSubmissionData(widget.fieldsConfig, input.data);
 
-    // 4. Idempotency handling
+    // 4. Rate limiting (per-client IP, enforced before expensive enrichment)
+    const clientIp = meta.ip || '127.0.0.1';
+    const rateLimit = submissionRateLimiter.consume(clientIp);
+    if (!rateLimit.allowed) {
+      throw new RateLimitExceededError('Too many requests', rateLimit.retryAfterSeconds);
+    }
+
+    // 5. Honeypot anti-spam check (_hp_title or _website)
+    const honeypotValue =
+      input._hp_title ||
+      input._website ||
+      (typeof input.data?._hp_title === 'string' ? input.data._hp_title : undefined) ||
+      (typeof input.data?._website === 'string' ? input.data._website : undefined);
+
+    if (typeof honeypotValue === 'string' && honeypotValue.trim().length > 0) {
+      console.warn(
+        `[AntiSpam] Honeypot triggered for widget ${widget.id} from IP ${clientIp}. Suppressing submission.`,
+      );
+      throw new SpamDetectedError('Submission rejected');
+    }
+
+    // 6. Idempotency handling
     const key = meta.idempotencyKey?.trim() || null;
 
     if (key) {
-      // Attempt conflict-safe insert
+      // Check if submission already exists with this key before executing geo enrichment
+      const existing = await submissionRepository.findByWidgetAndIdempotencyKey(widget.id, key);
+
+      if (existing) {
+        // Compare payload
+        const isSamePayload = arePayloadsEqual(existing.payload, validatedData);
+        if (!isSamePayload) {
+          throw new IdempotencyConflictError();
+        }
+
+        // Replay previous submission: zero duplicate insert, zero geo enrichment
+        return {
+          result: {
+            status: 'success',
+            submissionId: existing.id,
+            createdAt: existing.createdAt.toISOString(),
+            receivedAt: existing.createdAt.toISOString(),
+            idempotentReplay: true,
+          },
+          matchedOrigin,
+          isNew: false,
+        };
+      }
+    }
+
+    // 7. Geo enrichment (Provider A -> Provider B fallback -> null)
+    // Non-critical dependency: failures must never abort lead submission
+    const geoData: GeoLocation | null = await geoService.lookup(clientIp).catch(() => null);
+
+    // 8. Persistence into PostgreSQL
+    if (key) {
       const inserted = await submissionRepository.insert({
         tenantId: widget.tenantId,
         widgetId: widget.id,
@@ -66,6 +125,9 @@ export class SubmissionService {
         ipAddress: meta.ip || null,
         userAgent: meta.userAgent || null,
         origin: matchedOrigin || meta.origin || null,
+        geoCountry: geoData?.country || null,
+        geoCity: geoData?.city || null,
+        geoProvider: geoData?.provider || null,
       });
 
       if (inserted) {
@@ -81,26 +143,23 @@ export class SubmissionService {
         };
       }
 
-      // Record already exists with (widget_id, idempotency_key)
-      const existing = await submissionRepository.findByWidgetAndIdempotencyKey(widget.id, key);
+      // Handled race condition: record was inserted concurrently
+      const raceExisting = await submissionRepository.findByWidgetAndIdempotencyKey(widget.id, key);
 
-      if (!existing) {
+      if (!raceExisting) {
         throw new ConflictError('Concurrent idempotency conflict occurred');
       }
 
-      // Check if existing payload matches incoming payload
-      const isSamePayload = arePayloadsEqual(existing.payload, validatedData);
-      if (!isSamePayload) {
+      if (!arePayloadsEqual(raceExisting.payload, validatedData)) {
         throw new IdempotencyConflictError();
       }
 
-      // Identical idempotent replay
       return {
         result: {
           status: 'success',
-          submissionId: existing.id,
-          createdAt: existing.createdAt.toISOString(),
-          receivedAt: existing.createdAt.toISOString(),
+          submissionId: raceExisting.id,
+          createdAt: raceExisting.createdAt.toISOString(),
+          receivedAt: raceExisting.createdAt.toISOString(),
           idempotentReplay: true,
         },
         matchedOrigin,
@@ -108,7 +167,7 @@ export class SubmissionService {
       };
     }
 
-    // 5. Non-idempotent submission (no key)
+    // Non-idempotent submission (no key)
     const inserted = await submissionRepository.insert({
       tenantId: widget.tenantId,
       widgetId: widget.id,
@@ -117,6 +176,9 @@ export class SubmissionService {
       ipAddress: meta.ip || null,
       userAgent: meta.userAgent || null,
       origin: matchedOrigin || meta.origin || null,
+      geoCountry: geoData?.country || null,
+      geoCity: geoData?.city || null,
+      geoProvider: geoData?.provider || null,
     });
 
     if (!inserted) {

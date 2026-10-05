@@ -60,3 +60,18 @@ export class PayloadTooLargeError extends AppError {
     super(413, 'PAYLOAD_TOO_LARGE', message);
   }
 }
+
+export class RateLimitExceededError extends AppError {
+  public readonly retryAfterSeconds: number;
+
+  constructor(message = 'Too many requests', retryAfterSeconds = 60) {
+    super(429, 'RATE_LIMIT_EXCEEDED', message);
+    this.retryAfterSeconds = retryAfterSeconds;
+  }
+}
+
+export class SpamDetectedError extends AppError {
+  constructor(message = 'Submission rejected') {
+    super(400, 'SPAM_DETECTED', message);
+  }
+}

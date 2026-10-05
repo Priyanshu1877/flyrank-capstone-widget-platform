@@ -6,6 +6,7 @@ export const baseSubmissionSchema = z.object({
   widgetId: z.string().uuid('Invalid widget ID format'),
   data: z.record(z.string(), z.unknown()),
   _hp_title: z.string().optional(),
+  _website: z.string().optional(),
 });
 
 export type BaseSubmissionInput = z.infer<typeof baseSubmissionSchema>;

@@ -394,3 +394,104 @@ Antigravity was utilized as an AI pair programming and development assistant dur
 
 - Phase 2C-1 implements lead submission persistence and idempotency.
 - Rate limiting, honeypot spam protection, geo-location enrichment, background workers, and dashboard analytics are deferred to subsequent phases.
+
+---
+
+## [Phase 2C-2] - Abuse Protection, Honeypot & Geo Enrichment
+
+**Date**: 2026-10-05  
+**Scope**: Server-side IP rate limiting, honeypot bot trap, mock geo providers with timeout containment, failover chain, and graceful nil-degradation.
+
+### Objectives & Summary
+
+Implemented Phase 2C-2 to harden the public lead submission gateway against abusive bot traffic and high-volume flooding, and integrated a resilient geo-enrichment pipeline.
+
+Key achievements:
+
+1. **Server-Side IP Rate Limiting**:
+   - Implemented an in-memory sliding-window rate limiter (`SlidingWindowRateLimiter`).
+   - Default window: 60 seconds; threshold: 60 requests per client IP.
+   - Enforced across all widget IDs for a given client IP, preventing attackers from bypassing limits by cycling widget IDs.
+   - Returns HTTP `429 RATE_LIMIT_EXCEEDED` with a standard `Retry-After: <seconds>` header.
+   - Positioned before expensive geo-enrichment and database persistence.
+2. **Honeypot Bot Protection**:
+   - Monitored top-level honeypot traps `_hp_title` and `_website` (hidden via CSS and omitted from configured fields).
+   - If either trap contains a non-empty string, returns HTTP `400 SPAM_DETECTED` with an opaque error message (`"Submission rejected"`).
+   - Zero database persistence to `submissions` table, zero geo provider invocation, and zero downstream side effects.
+   - Honeypot fields cannot overwrite genuine lead payload attributes or internal table columns.
+3. **Geo-Enrichment Abstraction & Failover**:
+   - Defined `IGeoProvider` strategy interface with `lookup(ip: string): Promise<GeoLocation | null>`.
+   - Implemented `MockGeoProviderA` as the primary deterministic mock provider (returning `country: "US"`, `city: "Austin"`, `provider: "provider_a"`).
+   - Implemented `MockGeoProviderB` as the deterministic fallback provider (returning `country: "GB"`, `city: "London"`, `provider: "provider_b"`).
+   - Implemented `GeoService` orchestrating the failover sequence:
+     - Calls Provider A with a 500ms timeout guard (`Promise.race`).
+     - If Provider A succeeds, uses Provider A data (`provider_a`). Provider B is not called.
+     - If Provider A fails or times out, falls back to Provider B.
+     - If Provider B succeeds, uses Provider B data (`provider_b`).
+     - If Provider B also fails or times out, degrades gracefully to `null`.
+4. **Graceful Nil-Degradation**:
+   - Lead capture is treated as mission-critical; geo-enrichment is best-effort.
+   - If both providers fail or time out, `geo_country`, `geo_city`, and `geo_provider` are stored as `NULL` in the PostgreSQL `submissions` table.
+   - The endpoint still returns HTTP `201 Created` with valid submission metadata.
+   - Zero internal provider exceptions, network traces, API keys, or stack traces are ever exposed to the client.
+5. **Idempotency Ordering**:
+   - Existing idempotent submissions replayed via `Idempotency-Key` bypass geo-enrichment entirely, avoiding redundant provider lookups.
+6. **Reverse Proxy & IP Spoofing Hardening**:
+   - Configured Express `trust proxy` setting (`loopback` in production, `true` in test runner).
+   - Prevents arbitrary spoofing of `X-Forwarded-For` from untrusted networks.
+   - Client IP addresses are never exposed in public API responses.
+
+### Implementation Decisions
+
+1. **In-Memory Rate Limiting vs. External Store**:
+   - In accordance with capstone specifications, Redis or external infrastructure was not introduced.
+   - In-memory sliding window provides accurate timestamp-based rate calculation without dependency overhead for single-process deployments.
+2. **Provider Mock Realism Without Fake Production Secrets**:
+   - No external network calls or fake third-party API keys were added. Deterministic in-memory mock providers simulate success, failure, and timeout conditions cleanly and reliably.
+3. **500ms Timeout Guard**:
+   - Wrapped provider lookups in `executeWithTimeout` using `Promise.race` and `setTimeout` to guarantee that slow third-party geo services can never stall the submission request or exhaust server connections.
+4. **Pipeline Execution Sequence**:
+   - Enforced: `Request ID` → `16 KB Limit` → `Widget Resolution` → `CORS/Origin Check` → `Dynamic Field Validation` → `Rate Limiting` → `Honeypot Trap Check` → `Idempotency Replay` → `Geo Enrichment` → `PostgreSQL Persistence` → `201 Created`.
+
+### AI Assistance Used
+
+- Assisted in drafting the `SlidingWindowRateLimiter` sliding-window timestamp pruning logic.
+- Assisted in architecting `GeoService` failover sequence with `Promise.race` timeout containment.
+- Assisted in generating the 17 integration tests in `tests/abuse-and-geo.test.ts`.
+
+### Verification Performed
+
+1. **Automated Integration Test Suite**:
+   - `npm test` (`vitest run`):
+     - `tests/health.test.ts` (1 test passed)
+     - `tests/db.test.ts` (2 tests passed)
+     - `tests/auth.test.ts` (13 tests passed)
+     - `tests/tenant-isolation.test.ts` (5 tests passed)
+     - `tests/widget-crud.test.ts` (15 tests passed)
+     - `tests/widget-delivery.test.ts` (11 tests passed)
+     - `tests/submissions.test.ts` (20 tests passed)
+     - `tests/abuse-and-geo.test.ts` (17 tests passed)
+     - Total: **8 test files, 84 tests passed (100% pass rate)** in 1.49s.
+2. **Type Checking & Code Quality**:
+   - `npm run typecheck` (`tsc --noEmit`) -> Exit 0 (zero errors).
+   - `npm run lint` (`eslint .`) -> Exit 0 (zero errors, zero warnings).
+   - `npm run format:check` (`prettier --check .`) -> Exit 0 (all files formatted).
+3. **Production Build**:
+   - `npm run build` (`tsc`) -> Exit 0 (`dist/` generated successfully).
+4. **Live Manual End-to-End Verification (Probes A through G)**:
+   - **Probe A (Normal submission succeeds)**: Status 201 Created.
+   - **Probe B (Repeated rapid submissions hit 429)**: Exceeded 5 reqs -> HTTP 429 `RATE_LIMIT_EXCEEDED` with `Retry-After: 60`.
+   - **Probe C (Honeypot submission detected)**: Non-empty `_hp_title` -> HTTP 400 `SPAM_DETECTED`, zero DB record created.
+   - **Probe D (Provider A success)**: Database row persisted with `geo_country = 'US'`, `geo_city = 'Austin'`, `geo_provider = 'provider_a'`.
+   - **Probe E (Provider A failure + Provider B success)**: Provider A failed; fallback to Provider B succeeded; database row persisted with `geo_country = 'GB'`, `geo_city = 'London'`, `geo_provider = 'provider_b'`.
+   - **Probe F (Provider A + B failure)**: Both providers failed; submission still succeeded with HTTP 201 Created; database row persisted with `geo_country = NULL`, `geo_city = NULL`, `geo_provider = NULL`.
+   - **Probe G (Idempotent replay skips geo)**: Initial submission invoked geo lookup once; identical idempotent replay returned HTTP 200 OK with zero additional geo lookups (total geo lookups remained 1).
+5. **Security & Secret Audit**:
+   - `.env` confirmed untracked and excluded.
+   - No sensitive IP or provider credentials leaked in API responses.
+
+### Known Limitations
+
+- In-memory rate limiting state is local to the Node.js process and does not synchronize across distributed replicas (Redis or API Gateway limiter required for clustered production).
+- Geo providers are deterministic mocks; real external geo APIs will be configured in a future production deployment phase.
+- Transactional outbox (`jobs` table), background worker processing, and dashboard analytics are deferred to subsequent phases.

@@ -11,6 +11,9 @@ import { submissionRouter } from './modules/submissions/submission.routes.js';
 export const createApp = (): Express => {
   const app = express();
 
+  // Trust proxy for loopback and test environments to resolve req.ip safely
+  app.set('trust proxy', env.NODE_ENV === 'test' ? true : 'loopback');
+
   app.use(requestIdMiddleware);
   // Dynamic CORS: Public routes evaluate origins per-widget from DB; other routes use CORS_ALLOWED_ORIGINS
   app.use((req, res, next) => {

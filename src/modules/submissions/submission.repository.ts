@@ -47,9 +47,12 @@ export class SubmissionRepository {
         payload,
         ip_address,
         user_agent,
-        origin
+        origin,
+        geo_country,
+        geo_city,
+        geo_provider
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
       ON CONFLICT (widget_id, idempotency_key) WHERE idempotency_key IS NOT NULL
       DO NOTHING
       RETURNING id, tenant_id, widget_id, idempotency_key, payload, ip_address, user_agent, origin, geo_country, geo_city, geo_provider, created_at;
@@ -62,6 +65,9 @@ export class SubmissionRepository {
       params.ipAddress || null,
       params.userAgent || null,
       params.origin || null,
+      params.geoCountry || null,
+      params.geoCity || null,
+      params.geoProvider || null,
     ];
 
     const res = client

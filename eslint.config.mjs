@@ -22,4 +22,19 @@ export default tseslint.config(
       '@typescript-eslint/no-namespace': 'off',
     },
   },
+  {
+    files: ['public/**/*.js'],
+    languageOptions: {
+      globals: {
+        window: 'readonly',
+        document: 'readonly',
+        localStorage: 'readonly',
+        fetch: 'readonly',
+        navigator: 'readonly',
+        setTimeout: 'readonly',
+        console: 'readonly',
+        URLSearchParams: 'readonly',
+      },
+    },
+  },
 );

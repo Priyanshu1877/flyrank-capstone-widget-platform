@@ -6,9 +6,9 @@ The FlyRank Embeddable Widget & Lead-Capture Platform is a multi-tenant backend 
 
 ## Current Status
 
-**Phase 3A — Dashboard & Lead Management Backend Completed**
+**Phase 3B — Dashboard Frontend UI Completed**
 
-Phase 3A is implemented and verified. The platform provides authenticated, tenant-isolated backend APIs for dashboard and lead management: paginated and whitelisted-sorted lead submission inspection, strict widget and half-open date interval filtering (`from`/`to`), single submission detail retrieval with privacy-safe field exposure (visitor IP and user agent omitted), high-performance SQL aggregate statistics (`totalSubmissions`, `today`, `thisWeek`, `thisMonth`, `byWidget`), tenant-scoped background job observability, and widget listing. 141 automated integration tests are passing with a 100% pass rate.
+Phase 3B is implemented and verified. The platform provides an authenticated, responsive Single Page Application (SPA) dashboard served at `http://localhost:4000/dashboard` consuming the backend APIs. Features include real-time aggregate statistics cards, paginated and whitelisted-sorted lead submissions table, widget and date range filtering, strict anti-XSS safe text rendering for user-controlled lead payloads, submission detail inspection modal, operational background job queue monitor, and widget embed snippet clipboard copying. 151 automated tests are passing with a 100% pass rate.
 
 ## System Architecture & Specifications
 
@@ -54,7 +54,15 @@ Implemented & planned components:
   - High-performance SQL aggregate metrics (`GET /api/v1/dashboard/submissions/stats`) computing `totalSubmissions`, `today`, `thisWeek`, `thisMonth`, and `byWidget` breakdown using single-query SQL filters.
   - Operational job monitoring (`GET /api/v1/dashboard/jobs`) exposing execution status and retry counters while preventing sensitive payload leaks.
   - Tenant widget metadata list (`GET /api/v1/dashboard/widgets`).
-- **Dashboard Frontend UI (Planned - Phase 3B)**: Web client interface for visual charts, submissions tables, and lead exports.
+- **Dashboard Frontend UI (Implemented - Phase 3B)**:
+  - Responsive, accessibility-focused Single Page Application (SPA) served at `/dashboard`.
+  - Authentication flow supporting login, tenant registration, session storage in `localStorage`, and header user/tenant badge.
+  - Real-time aggregate statistics cards with loading skeletons.
+  - Filterable, sortable, and paginated lead submissions table with rows-per-page selector (10, 20, 50, 100).
+  - Anti-XSS safe text rendering (using DOM `textContent` and `createTextNode`) ensuring malicious script tags in user-submitted payloads appear purely as inert text and never execute.
+  - Lead submission detail modal with clear key-value metadata and formatted payload view.
+  - Operational background job queue monitor with live status indicators (`pending`, `processing`, `completed`, `failed`).
+  - Tenant widget cards with one-click embed snippet copying (`<script src=".../widget.js?id=..."></script>`) and direct link to live test on demo host site.
 
 ## Tech Stack
 
@@ -64,7 +72,7 @@ Implemented & planned components:
 - **Password Hashing**: bcryptjs (10 salt rounds)
 - **Authentication**: Stateless JSON Web Tokens (jsonwebtoken)
 - **Validation**: Zod
-- **Testing**: Vitest & Supertest (141 tests passing)
+- **Testing**: Vitest & Supertest (151 tests passing)
 - **Code Quality**: ESLint (Flat Config) & Prettier
 
 ## Local Development
@@ -409,6 +417,8 @@ A sample host page is provided in [`demo/index.html`](demo/index.html) to demons
 
 ```
 flyrank-capstone-widget-platform/
+├── public/             # Static frontend assets
+│   └── dashboard/      # Single-Page Application (index.html, dashboard.css, dashboard.js)
 ├── src/
 │   ├── config/         # Environment parsing and typed schema validation (Zod)
 │   ├── middleware/     # Auth, error, tenant-context, and request-id middleware
@@ -424,7 +434,7 @@ flyrank-capstone-widget-platform/
 │   ├── shared/         # Database pool, migrations, and shared types
 │   ├── app.ts          # Express application initialization and route mounting
 │   └── server.ts       # Server entrypoint and lifecycle listener
-├── tests/              # Test suites (Vitest / Supertest - 141 tests passing)
+├── tests/              # Test suites (Vitest / Supertest - 151 tests passing)
 │   ├── health.test.ts
 │   ├── db.test.ts
 │   ├── auth.test.ts
@@ -434,7 +444,8 @@ flyrank-capstone-widget-platform/
 │   ├── submissions.test.ts
 │   ├── abuse-and-geo.test.ts
 │   ├── jobs-and-worker.test.ts
-│   └── dashboard.test.ts
+│   ├── dashboard.test.ts
+│   └── dashboard-frontend.test.ts
 ├── db/
 │   ├── migrations/     # 001_identity_domain.sql, 002_widget_domain.sql, 003_submissions_domain.sql, 004_jobs_domain.sql
 │   └── migrate.ts      # Automated database migration runner
@@ -467,5 +478,5 @@ The project uses a typed configuration schema in [`src/config/env.ts`](src/confi
 
 ## Limitations
 
-This is **Phase 3A**. Identity (Phase 2A), Widget Management & Delivery (Phase 2B), Hardened Lead Submission Persistence & Idempotency (Phase 2C-1), Abuse Protection, Honeypot & Geo Enrichment (Phase 2C-2), Background Jobs, Transactional Outbox & Reliable Side Effects (Phase 2C-3), and Dashboard Lead Management Backend (Phase 3A) are implemented and verified.
-Dashboard frontend client (Phase 3B), charts UI, and external email/webhook notifications are deferred to subsequent phases.
+This is **Phase 3B**. Identity (Phase 2A), Widget Management & Delivery (Phase 2B), Hardened Lead Submission Persistence & Idempotency (Phase 2C-1), Abuse Protection, Honeypot & Geo Enrichment (Phase 2C-2), Background Jobs, Transactional Outbox & Reliable Side Effects (Phase 2C-3), Dashboard Backend APIs (Phase 3A), and Dashboard Frontend UI (Phase 3B) are implemented and verified.
+Real external email/SMS integrations and cloud deployment infrastructure are deferred to subsequent phases.

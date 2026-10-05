@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FlyRank — Lead Capture & Embeddable Widget Management Platform</title>
+    <meta
+      name="description"
+      content="Multi-tenant lead management dashboard, submission analytics, and embeddable widget control center."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/dashboard/dashboard.css" />
+  </head>
+  <body>
+    <!-- Top Navigation Bar -->
+    <header class="app-header">
+      <div class="header-container">
+        <a href="/dashboard" class="brand">
+          <div class="brand-icon">F</div>
+          <span class="brand-name">FlyRank</span>
+          <span class="brand-tag">Platform</span>
+        </a>
+
+        <div class="header-actions">
+          <button id="btnRefreshData" class="btn btn-ghost btn-sm" title="Refresh Dashboard Data">
+            ↻ Refresh
+          </button>
+
+          <div id="userBadgeContainer" class="user-badge" style="display: none">
+            <span class="pulse-dot" style="color: var(--success)"></span>
+            <span id="headerTenantName" class="tenant-pill">Loading...</span>
+            <span id="headerUserEmail" class="user-email-text"></span>
+          </div>
+
+          <button id="headerLoginBtn" class="btn btn-primary btn-sm">Log In</button>
+          <button id="headerLogoutBtn" class="btn btn-ghost btn-sm" style="display: none">
+            Log Out
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Dashboard Body -->
+    <main class="app-main" id="dashboardMain">
+      <!-- Section 1: Aggregate Overview Stats -->
+      <section aria-labelledby="statsSectionTitle">
+        <div class="section-header">
+          <div>
+            <h1 id="statsSectionTitle" class="section-title">Lead Overview & Activity</h1>
+            <p class="section-subtitle">Real-time aggregate capture performance across widgets</p>
+          </div>
+        </div>
+
+        <div class="stats-grid" id="statsContainer">
+          <div class="stat-card">
+            <span class="stat-title">Total Submissions</span>
+            <span class="stat-value" id="statTotal">—</span>
+            <span class="stat-subtext">All-time captured leads</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-title">Today</span>
+            <span class="stat-value" id="statToday" style="color: var(--info)">—</span>
+            <span class="stat-subtext">Since 00:00 UTC</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-title">This Week</span>
+            <span class="stat-value" id="statWeek" style="color: var(--success)">—</span>
+            <span class="stat-subtext">Current calendar week</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-title">This Month</span>
+            <span class="stat-value" id="statMonth" style="color: var(--warning)">—</span>
+            <span class="stat-subtext">Current calendar month</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Section 2: Submissions / Leads Table -->
+      <section aria-labelledby="submissionsSectionTitle">
+        <div class="section-header">
+          <div>
+            <h2 id="submissionsSectionTitle" class="section-title">Captured Leads</h2>
+            <p class="section-subtitle">
+              Filtered and paginated visitor inquiries (<span id="leadsTotalCount">0</span> total)
+            </p>
+          </div>
+        </div>
+
+        <!-- Filter & Control Toolbar -->
+        <div class="filter-bar">
+          <div class="filter-group">
+            <label for="filterWidgetSelect" class="filter-label">Widget:</label>
+            <select id="filterWidgetSelect" class="form-select">
+              <option value="">All Widgets</option>
+            </select>
+          </div>
+
+          <div class="filter-group">
+            <label for="filterSortSelect" class="filter-label">Sort:</label>
+            <select id="filterSortSelect" class="form-select">
+              <option value="created_at_desc">Newest First</option>
+              <option value="created_at_asc">Oldest First</option>
+            </select>
+          </div>
+
+          <div class="filter-group date-filters">
+            <label for="filterFromDate" class="filter-label">From:</label>
+            <input type="date" id="filterFromDate" class="form-input" />
+
+            <label for="filterToDate" class="filter-label">To:</label>
+            <input type="date" id="filterToDate" class="form-input" />
+
+            <button id="btnApplyDateFilter" class="btn btn-secondary btn-sm" type="button">
+              Apply
+            </button>
+            <button id="btnClearDateFilter" class="btn btn-ghost btn-sm" type="button">
+              Clear
+            </button>
+
+            <button
+              class="btn btn-ghost btn-sm btn-date-preset"
+              data-days="0"
+              type="button"
+              title="Today"
+            >
+              Today
+            </button>
+            <button
+              class="btn btn-ghost btn-sm btn-date-preset"
+              data-days="7"
+              type="button"
+              title="Last 7 Days"
+            >
+              7d
+            </button>
+            <button
+              class="btn btn-ghost btn-sm btn-date-preset"
+              data-days="30"
+              type="button"
+              title="Last 30 Days"
+            >
+              30d
+            </button>
+          </div>
+        </div>
+
+        <!-- Table Card -->
+        <div class="table-card">
+          <div class="table-responsive">
+            <table class="data-table" aria-label="Submissions Table">
+              <thead>
+                <tr>
+                  <th scope="col">Submission ID</th>
+                  <th scope="col">Widget</th>
+                  <th scope="col">Lead Payload Preview</th>
+                  <th scope="col">Location (Geo)</th>
+                  <th scope="col">Submitted At</th>
+                  <th scope="col">Action</th>
+                </tr>
+              </thead>
+              <tbody id="submissionsTbody">
+                <!-- Dynamically populated or skeleton loader -->
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Empty State -->
+          <div id="submissionsEmptyState" class="empty-state" style="display: none">
+            <div class="empty-icon">📥</div>
+            <h3 class="empty-title">No leads yet</h3>
+            <p class="empty-subtext">
+              Embed your widget script onto your site to begin capturing incoming leads in real
+              time.
+            </p>
+          </div>
+
+          <!-- Error State -->
+          <div id="submissionsErrorState" class="empty-state" style="display: none">
+            <div class="empty-icon">⚠️</div>
+            <h3 class="empty-title">Unable to load dashboard data</h3>
+            <p id="errorMessageText" class="empty-subtext">
+              Network or authorization error. Please try again.
+            </p>
+            <button
+              id="btnRetrySubmissions"
+              class="btn btn-secondary btn-sm"
+              style="margin-top: 12px"
+            >
+              Try Again
+            </button>
+          </div>
+
+          <!-- Pagination Bar -->
+          <nav class="pagination-bar" aria-label="Submissions Pagination">
+            <div class="filter-group">
+              <label for="filterLimitSelect" class="filter-label">Rows per page:</label>
+              <select id="filterLimitSelect" class="form-select">
+                <option value="10">10</option>
+                <option value="20" selected>20</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+              </select>
+            </div>
+
+            <div class="pagination-controls">
+              <span
+                >Page <strong id="pageCurrent">1</strong> of <strong id="pageTotal">1</strong></span
+              >
+              <button id="btnPrevPage" class="btn btn-secondary btn-sm" disabled>Previous</button>
+              <button id="btnNextPage" class="btn btn-secondary btn-sm" disabled>Next</button>
+            </div>
+          </nav>
+        </div>
+      </section>
+
+      <!-- Section 3: Dual Grid (Operational Jobs & Widgets Management) -->
+      <section class="dual-section-grid" aria-label="Operations and Widgets">
+        <!-- Background Jobs Card Panel -->
+        <div class="card-panel">
+          <div class="section-header">
+            <div>
+              <h3 class="section-title">Background Job Queue</h3>
+              <p class="section-subtitle">Side effects & webhook execution</p>
+            </div>
+          </div>
+          <div id="jobsListContainer" class="job-list">
+            <!-- Dynamically populated -->
+          </div>
+        </div>
+
+        <!-- Tenant Widgets Card Panel -->
+        <div class="card-panel">
+          <div class="section-header">
+            <div>
+              <h3 class="section-title">Tenant Widgets</h3>
+              <p class="section-subtitle">Active configurations and embed snippets</p>
+            </div>
+          </div>
+          <div id="widgetsListContainer" class="widget-list">
+            <!-- Dynamically populated -->
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Submission Detail Slide-over / Modal -->
+    <div
+      id="detailModal"
+      class="modal-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="detailModalId"
+    >
+      <div class="modal-panel">
+        <div class="modal-header">
+          <h3 id="detailModalId" class="modal-title">Submission Details</h3>
+          <button
+            id="btnCloseDetailModal"
+            class="btn btn-ghost btn-sm"
+            type="button"
+            aria-label="Close detail modal"
+          >
+            ✕
+          </button>
+        </div>
+        <div class="modal-body" id="detailModalBody">
+          <!-- Populated dynamically with safe text rendering -->
+        </div>
+      </div>
+    </div>
+
+    <!-- Authentication Modal (Login / Register) -->
+    <div
+      id="authModal"
+      class="modal-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="authModalTitle"
+    >
+      <div class="modal-panel auth-panel">
+        <div class="modal-header">
+          <h3 id="authModalTitle" class="modal-title">Authentication Required</h3>
+        </div>
+        <div class="modal-body">
+          <div class="auth-tabs" role="tablist">
+            <button id="tabLogin" class="auth-tab active" role="tab" aria-selected="true">
+              Log In
+            </button>
+            <button id="tabRegister" class="auth-tab" role="tab" aria-selected="false">
+              Create Tenant Account
+            </button>
+          </div>
+
+          <div id="authErrorBanner" class="auth-banner-error" style="display: none"></div>
+
+          <!-- Login Form -->
+          <form id="loginForm">
+            <div class="form-group">
+              <label for="loginEmail" class="form-label">Email Address</label>
+              <input
+                type="email"
+                id="loginEmail"
+                class="form-control"
+                required
+                autocomplete="email"
+                placeholder="name@company.com"
+              />
+            </div>
+            <div class="form-group">
+              <label for="loginPassword" class="form-label">Password</label>
+              <input
+                type="password"
+                id="loginPassword"
+                class="form-control"
+                required
+                autocomplete="current-password"
+                placeholder="••••••••"
+              />
+            </div>
+            <button type="submit" class="btn btn-primary" style="width: 100%; margin-top: 8px">
+              Sign In to Dashboard
+            </button>
+
+            <div class="demo-account-hint">
+              <strong>Quick Test Helper:</strong><br />
+              Need credentials? Click below to fill demo account credentials seeded in PostgreSQL:
+              <button
+                type="button"
+                id="btnFillDemoAccount"
+                class="btn btn-secondary btn-sm"
+                style="margin-top: 6px; width: 100%"
+              >
+                Use Demo Account (demo@flyrank.test)
+              </button>
+            </div>
+          </form>
+
+          <!-- Register Form -->
+          <form id="registerForm" style="display: none">
+            <div class="form-group">
+              <label for="registerName" class="form-label">Company / Tenant Name</label>
+              <input
+                type="text"
+                id="registerName"
+                class="form-control"
+                required
+                placeholder="Acme Global Inc"
+              />
+            </div>
+            <div class="form-group">
+              <label for="registerEmail" class="form-label">Email Address</label>
+              <input
+                type="email"
+                id="registerEmail"
+                class="form-control"
+                required
+                autocomplete="email"
+                placeholder="owner@acme.com"
+              />
+            </div>
+            <div class="form-group">
+              <label for="registerPassword" class="form-label">Password</label>
+              <input
+                type="password"
+                id="registerPassword"
+                class="form-control"
+                required
+                autocomplete="new-password"
+                minlength="8"
+                placeholder="Minimum 8 characters"
+              />
+            </div>
+            <button type="submit" class="btn btn-primary" style="width: 100%; margin-top: 8px">
+              Create Account & Log In
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- Client Application Scripts -->
+    <script src="/dashboard/dashboard.js"></script>
+  </body>
+</html>

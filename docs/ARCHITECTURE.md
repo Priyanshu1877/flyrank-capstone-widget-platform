@@ -1436,3 +1436,72 @@ PostgreSQL Database
   ```
 - Filtering by widget utilizes `idx_submissions_widget_created` on `(widget_id, created_at DESC)`.
 - Foreign key constraints with `ON DELETE CASCADE` ensure integrity when tenants or widgets are removed.
+
+---
+
+## 12. Dashboard Frontend UI Architecture (Phase 3B)
+
+### 1. Architectural Role & Boundary
+
+The Dashboard Frontend is a responsive Single Page Application (SPA) served at `/dashboard` by the FlyRank Express platform. It provides an authenticated administrative and analytical interface for customer tenants to inspect captured leads, monitor background job execution, and copy embed snippets.
+
+- **Client-Side SPA Architecture**: Implemented with pure semantic HTML5, Vanilla CSS using an HSL-based design system, and structured modular JavaScript.
+- **Zero Heavy Framework Footprint**: Conforms strictly to project constraints by avoiding heavy external UI dependencies while delivering a high-performance, accessible, and responsive user experience.
+- **Strict Decoupling**: Communicates with the backend exclusively via standard JSON REST endpoints (`/api/v1/dashboard/*` and `/api/v1/auth/*`). The frontend has zero direct database access.
+
+### 2. Authentication & Session Flow
+
+```
+User Enters /dashboard
+         │
+         ▼
+Check localStorage('flyrank_token')
+         │
+    ┌────┴───────────────────────────┐
+    │ Present                        │ Absent / Expired (401)
+    ▼                                ▼
+Load Dashboard Modules          Open Auth Modal (Login / Register Tabs)
+(Stats, Leads, Jobs, Widgets)        │
+                                     ▼
+                            POST /api/v1/auth/login
+                                     │
+                                     ▼
+                            Save Token to localStorage
+                                     │
+                                     ▼
+                            Transition to Authenticated View
+```
+
+- **Session Expiry (401 Handling)**: The API client centrally intercepts any HTTP 401 response, purges the stale token and metadata from `localStorage`, updates the header to unauthenticated state, and immediately prompts the login modal.
+
+### 3. Anti-XSS & Untrusted Data Safe Rendering
+
+User-submitted form payloads (`submissions.payload`) are fundamentally untrusted and may contain malicious script injection attempts (e.g. `<script>alert('XSS')</script>` or `<img src=x onerror=...`).
+
+- **Zero `innerHTML` for User Data**: Untrusted input is **NEVER** injected into the DOM via `innerHTML`, `outerHTML`, or template literals.
+- **Safe DOM Text Nodes**: Values are strictly rendered using `element.textContent = value` or `document.createTextNode(value)`.
+- **Browser Protection**: Browsers treat `textContent` strictly as inert string literals. Malicious tags are visually displayed to the operator as text but are completely disarmed from browser execution.
+
+### 4. Component Layout & Interaction Structure
+
+1. **Application Header**: Sticky blurred glassmorphism navigation with brand badge, data refresh trigger, active tenant and user profile badge, and authentication action buttons.
+2. **Overview Cards (`GET /api/v1/dashboard/submissions/stats`)**: Four metric cards displaying Total Submissions, Today, This Week, and This Month with animated skeleton loading states.
+3. **Leads Management Table (`GET /api/v1/dashboard/submissions`)**:
+   - Filter bar supporting widget dropdown, ISO date bounds with preset shortcuts ("Today", "7d", "30d"), sorting (`created_at_desc`, `created_at_asc`), and limit selection (10, 20, 50, 100).
+   - Leads table displaying truncated ID, widget name, sanitized payload summary, resolved location badge (city, country), submission timestamp, and "View" trigger.
+   - Server-backed pagination controls with total count and page indicators.
+4. **Lead Detail Modal / Drawer (`GET /api/v1/dashboard/submissions/:id`)**:
+   - Accessible dialog (`role="dialog"`, `aria-modal="true"`) dismissible via keyboard `Escape` or backdrop click.
+   - Comprehensive metadata grid alongside formatted key-value cards for each form field.
+5. **Operational Background Jobs Panel (`GET /api/v1/dashboard/jobs`)**:
+   - Status indicators for asynchronous outbox processing (`pending`, `processing`, `completed`, `failed`).
+   - Displays retry attempt counts (`attempts/max_attempts`) and execution duration.
+6. **Widgets & Embed Delivery Panel (`GET /api/v1/dashboard/widgets`)**:
+   - Card listing for each configured tenant widget with version and active status badges.
+   - Embed snippet box with one-click clipboard copying (`<script src=".../widget.js?id=..."></script>`) providing visual confirmation.
+   - Direct link to launch the cross-origin host test harness (`http://localhost:5000/index.html?id=...`).
+
+### 5. Responsive Design & Accessibility (a11y)
+
+- **Responsive Layout**: Fluid CSS grid and flexbox layout adapting seamlessly from wide desktop displays down to mobile smartphones (<640px). The leads table container incorporates horizontal touch-scrolling.
+- **Accessibility Standards**: Semantic HTML (`<header>`, `<main>`, `<section>`, `<table>`, `<nav>`), standard `<button>` elements (no click-hijacked `<div>` elements), clear focus indicators (`:focus-visible`), and accessible form labels.

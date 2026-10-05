@@ -1,3 +1,4 @@
+import path from 'path';
 import express, { type Express, type Request, type Response } from 'express';
 import cors from 'cors';
 import { env } from './config/env.js';
@@ -11,6 +12,7 @@ import { dashboardRouter } from './modules/dashboard/dashboard.routes.js';
 
 export const createApp = (): Express => {
   const app = express();
+  const publicDir = path.join(process.cwd(), 'public');
 
   // Trust proxy for loopback and test environments to resolve req.ip safely
   app.set('trust proxy', env.NODE_ENV === 'test' ? true : 'loopback');
@@ -18,7 +20,11 @@ export const createApp = (): Express => {
   app.use(requestIdMiddleware);
   // Dynamic CORS: Public routes evaluate origins per-widget from DB; other routes use CORS_ALLOWED_ORIGINS
   app.use((req, res, next) => {
-    if (req.path.startsWith('/api/v1/public') || req.path === '/widget.js') {
+    if (
+      req.path.startsWith('/api/v1/public') ||
+      req.path === '/widget.js' ||
+      req.path.startsWith('/dashboard')
+    ) {
       return next();
     }
     return cors({
@@ -26,6 +32,17 @@ export const createApp = (): Express => {
     })(req, res, next);
   });
   app.use(express.json({ limit: '16kb' }));
+
+  // Dashboard Frontend UI routes (mounted before express.static to serve 200 directly)
+  app.get(['/dashboard', '/dashboard/'], (_req: Request, res: Response) => {
+    res.sendFile(path.join(publicDir, 'dashboard', 'index.html'));
+  });
+  app.get('/', (_req: Request, res: Response) => {
+    res.redirect('/dashboard');
+  });
+
+  // Static assets (CSS, JS, icons) for dashboard frontend
+  app.use(express.static(publicDir, { redirect: false }));
 
   // Minimal health check endpoint
   app.get('/health', (_req: Request, res: Response) => {

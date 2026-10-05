@@ -688,3 +688,100 @@ Implement backend/API-only dashboard and lead management capabilities for authen
    - **Probe G**: Verified pagination (`page=1, limit=10, total=1, totalPages=1`).
    - **Probe H**: Verified widget filtering (owned widget succeeded; foreign widget returned HTTP 404).
    - **Probe I**: Verified aggregate statistics (Tenant A total=1, today=1; Tenant B total=0, today=0).
+
+---
+
+## Phase 3B — Dashboard Frontend UI
+
+**Date**: October 5, 2026
+
+### Objective
+
+Build the authenticated dashboard frontend Single Page Application (SPA) that consumes the existing Phase 3A backend APIs:
+
+1. Provide responsive overview cards displaying real-time aggregate statistics (`totalSubmissions`, `today`, `thisWeek`, `thisMonth`).
+2. Provide a full-featured lead management table with server-side pagination, widget filtering, date range boundaries, and safe whitelisted sorting.
+3. Guarantee strict Anti-XSS safe rendering: user-controlled lead form data must be rendered as raw DOM text nodes, never executing script tags or HTML injections.
+4. Provide a slide-over/modal detail drawer for inspecting individual submissions.
+5. Provide operational background job queue observability (`pending`, `processing`, `completed`, `failed`).
+6. Provide a tenant widgets section with instant embed snippet clipboard copying and direct link to the cross-origin host test harness.
+7. Preserve existing embeddable widget functionality with zero regressions.
+
+### Work Completed
+
+1. **Dashboard Frontend Architecture (`public/dashboard/`)**:
+   - `index.html`: Semantic HTML5 document structure containing sticky blurred header with tenant badge, Overview Stats grid, Captured Leads table with toolbar, Background Jobs panel, Tenant Widgets panel, Submission Detail dialog, and Authentication modal with demo credential helper.
+   - `dashboard.css`: Modern CSS design system featuring HSL color variables, glassmorphism card surfaces, Inter typography, animated pulse indicators, skeleton shimmer loading placeholders, and fluid responsive grid layouts for desktop, tablet, and mobile displays.
+   - `dashboard.js`: Modular client-side application logic containing:
+     - Centralized `apiRequest` client with automatic JWT Bearer header injection and centralized 401 session expiry handling.
+     - Anti-XSS helper `createSafeTextElement` utilizing DOM `textContent` and `createTextNode` (zero `innerHTML` on untrusted user data).
+     - Overview stats loader fetching from `GET /api/v1/dashboard/submissions/stats`.
+     - Submissions table loader fetching from `GET /api/v1/dashboard/submissions` with page, limit, sort, widgetId, from, and to parameters.
+     - Submission detail loader fetching from `GET /api/v1/dashboard/submissions/:id`.
+     - Background jobs queue loader fetching from `GET /api/v1/dashboard/jobs`.
+     - Widget loader fetching from `GET /api/v1/dashboard/widgets` with one-click clipboard copying.
+2. **Server Route Integration (`src/app.ts`)**:
+   - Configured `express.static('public', { redirect: false })` to serve dashboard assets.
+   - Mounted `app.get(['/dashboard', '/dashboard/'])` to serve the dashboard SPA shell directly with HTTP 200.
+   - Mounted `app.get('/')` redirecting to `/dashboard`.
+3. **Automated Test Suite (`tests/dashboard-frontend.test.ts`)**:
+   - Created 10 integration tests validating:
+     - HTML shell delivery on `GET /dashboard` with HTTP 200.
+     - Root redirect `GET /` -> `/dashboard` (HTTP 302).
+     - Static stylesheet delivery `GET /dashboard/dashboard.css` (HTTP 200).
+     - Static script delivery `GET /dashboard/dashboard.js` (HTTP 200).
+     - Anti-XSS validation: verifying that client script strictly uses `textContent` and never `dangerouslySetInnerHTML`.
+     - Malicious submission rendering: verifying untrusted payloads like `<script>alert("XSS")</script>` and `<img src=x onerror=...>` are preserved as inert structured strings without HTML execution.
+     - Conformance of all 5 backend APIs with frontend client expectations.
+4. **Interactive Browser Verification**:
+   - Executed live browser session using subagent recorded to artifact video.
+   - Verified login with demo account, stats overview rendering, lead table pagination and sorting, widget filtering, submission detail modal, snippet clipboard copying, external host site widget submission, and safe rendering of `<script>alert("XSS")</script>` as inert text.
+
+### Developer Decisions
+
+1. **Vanilla Modern SPA Architecture**:
+   - Avoided introducing heavy, multi-megabyte JavaScript frameworks (React/Vite/Tailwind) into a lightweight backend-centric architecture. Delivered high visual quality, responsiveness, and accessibility using native web standards.
+2. **Anti-XSS by Construction**:
+   - Enforced that user-submitted lead values are inserted into DOM elements strictly via `element.textContent = value` or `document.createTextNode(value)`. Browser DOM parsers treat text nodes strictly as string data, guaranteeing that `<script>` tags can never execute.
+3. **Decoupled API Client with Centralized 401 Recovery**:
+   - Network interactions funnel through `apiRequest()`. If the backend returns 401 (e.g. expired JWT), the client cleans `localStorage` and smoothly presents the authentication modal without throwing uncaught exceptions.
+4. **Zero Regression Guarantee for Widget Delivery**:
+   - Preserved all existing endpoints (`/widget.js`, `/api/v1/public/widgets/:id/config`, `/api/v1/public/submissions`). Verified cross-origin widget delivery on `http://localhost:5000` remains completely intact.
+
+### AI Assistance Used
+
+- Antigravity assisted in authoring the HTML, modern CSS design tokens, modular client-side JavaScript, Vitest integration tests in `tests/dashboard-frontend.test.ts`, and executing interactive browser subagent verification.
+
+### Verification Performed
+
+1. **Automated Integration Test Suite**:
+   - `npm test` (`vitest run`):
+     - `tests/health.test.ts` (1 test passed)
+     - `tests/db.test.ts` (2 tests passed)
+     - `tests/auth.test.ts` (13 tests passed)
+     - `tests/tenant-isolation.test.ts` (5 tests passed)
+     - `tests/widget-crud.test.ts` (15 tests passed)
+     - `tests/widget-delivery.test.ts` (11 tests passed)
+     - `tests/submissions.test.ts` (20 tests passed)
+     - `tests/abuse-and-geo.test.ts` (17 tests passed)
+     - `tests/jobs-and-worker.test.ts` (18 tests passed)
+     - `tests/dashboard.test.ts` (39 tests passed)
+     - `tests/dashboard-frontend.test.ts` (10 tests passed)
+     - Total: **11 test files, 151 tests passed (100% pass rate)**.
+2. **Type Checking & Code Quality**:
+   - `npm run typecheck` (`tsc --noEmit`) -> Exit 0 (zero errors).
+   - `npm run lint` (`eslint .`) -> Exit 0 (zero errors, zero warnings).
+   - `npm run format:check` (`prettier --check .`) -> Exit 0 (all files formatted).
+3. **Production Build**:
+   - `npm run build` (`tsc`) -> Exit 0 (`dist/` generated cleanly).
+4. **Live Browser Verification (Probes A through Q)**:
+   - **Probe A & B**: Login via Auth Modal succeeded; dashboard header displayed `Acme Demo Corp` and `demo@flyrank.test`.
+   - **Probe C**: Overview stats cards displayed live aggregate numbers.
+   - **Probe D**: Leads table rendered actual submissions from PostgreSQL.
+   - **Probe E**: Pagination controls displayed current and total pages.
+   - **Probe F & H**: Widget filter and sorting toggled data dynamically.
+   - **Probe I**: Clicking a submission opened the detail modal with formatted metadata and payload fields.
+   - **Probe J**: Background job queue panel displayed job types, attempts, and status badges.
+   - **Probe K & L**: Widget panel displayed widgets; clicking "Copy Snippet" produced visual "✓ Copied!" confirmation.
+   - **Probe P**: Loaded `http://localhost:5000/index.html?id=10b4d283-ea2e-4e16-ad1b-2e79c3db6665`, verified cross-origin widget rendered, and submitted lead.
+   - **Probe Q**: Verified malicious string `<script>alert("XSS")</script>` in submitted lead payload displayed safely as plain text in both the table and detail modal without script execution.

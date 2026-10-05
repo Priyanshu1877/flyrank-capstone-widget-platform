@@ -1,6 +1,6 @@
 name: flyrank-capstone-widget-platform
 title: Embeddable Widget & Lead-Capture Platform
-phase: 'Phase 2C-3 - Background Jobs & Reliable Side Effects'
+phase: 'Phase 3A - Dashboard & Lead Management Backend'
 track: Backend AI Engineering
 language: TypeScript
 runtime: Node.js
@@ -22,6 +22,7 @@ completed_phases:
   - phase_2c_1
   - phase_2c_2
   - phase_2c_3
+  - phase_3a
 features_implemented:
   - minimal_health_check
   - postgresql_connection_pool
@@ -51,6 +52,13 @@ features_implemented:
   - exponential_backoff_retries
   - dead_letter_job_failures
   - stale_lock_recovery
+  - dashboard_lead_management_api
+  - dashboard_pagination_and_sorting
+  - dashboard_widget_date_filtering
+  - dashboard_submission_detail_safe_fields
+  - dashboard_aggregate_statistics_sql
+  - dashboard_operational_jobs_visibility
+  - dashboard_widget_list
 feature_flags:
   widget_crud: true
   widget_delivery: true
@@ -64,4 +72,4 @@ feature_flags:
   honeypot: true
   geo_enrichment: true
   background_jobs: true
-  dashboard: false
+  dashboard: true

@@ -1347,3 +1347,92 @@ To maintain a lean, robust, and reviewable architecture for the capstone, the fo
    - Error messages stored in `job_failures` and `jobs.last_error` are sanitized to redact authorization tokens, passwords, and API keys.
    - Full lead payloads are excluded from logs and jobs records.
    - Worker queries enforce optional tenant scoping for tenant-isolated worker pools.
+
+---
+
+## 11. Dashboard & Lead Management Backend Architecture (Phase 3A)
+
+### 1. Architectural Role & Boundary
+
+The Dashboard Backend provides authenticated, tenant-isolated APIs enabling customer organizations to inspect captured leads, filter submissions, analyze aggregation metrics, review operational background jobs, and list active widgets.
+
+- **Backend/API Only**: Provides strict JSON data endpoints (`/api/v1/dashboard/*`). Presentation, charts, and interactive UI are cleanly deferred to the dashboard frontend client.
+- **Strict Tenant Boundary**: Customers authenticate via JWT bearer tokens. Every database query strictly binds the tenant ID resolved from the verified JWT context (`req.auth.tenantId`). Client-supplied tenant IDs are never accepted or trusted.
+
+### 2. Authorization & Middleware Chain
+
+```
+Client Request
+      │
+      ▼
+requireAuth Middleware (Verifies Bearer JWT, validates signature, populates req.auth = { userId, tenantId, role })
+      │
+      ▼
+Zod Boundary Validation (Strict schema parsing for page, limit [1-100], sort whitelist, UUID format, ISO date validation)
+      │
+      ▼
+DashboardService (Enforces tenant widget ownership check, date interval coherence: from <= to, computes totalPages)
+      │
+      ▼
+DashboardRepository (Parameterized SQL queries strictly scoped with WHERE tenant_id = $tenantId)
+      │
+      ▼
+PostgreSQL Database
+```
+
+### 3. Repository Scoping & Anti-Leakage (Safe 404s)
+
+- All repository queries filter explicitly by `s.tenant_id = $1` at the SQL level.
+- When retrieving a submission by ID (`GET /api/v1/dashboard/submissions/:id`) or filtering by widget ID (`?widgetId=<uuid>`), the query requires `id = $id AND tenant_id = $tenantId`.
+- If an entity exists in the database but belongs to a different tenant, the API responds with a standard `404 NOT_FOUND` (`"Submission not found"` or `"Widget not found"`), identical to a genuinely non-existent entity. This ensures zero metadata leakage across tenants.
+
+### 4. Pagination & Sorting Design
+
+- **Pagination Strategy**: Database-level `LIMIT $limit OFFSET $offset` with total count computation via `COUNT(*)::int`.
+  - Default limit: 20 rows.
+  - Maximum limit: 100 rows (requests with `limit > 100` are rejected with `400 VALIDATION_ERROR`).
+  - Strict integer validation: `page >= 1`, rejecting negative numbers, floats, or non-integer strings.
+- **Sorting Whitelist**:
+  - Whitelist: `created_at_desc` (default) and `created_at_asc`.
+  - Raw client input is never interpolated into `ORDER BY`. Sort direction is strictly mapped to literal `'ASC'` or `'DESC'`.
+  - Attempts to inject SQL or pass unwhitelisted column names (e.g. `?sort=created_at;DROP TABLE...`) are rejected at the schema validation boundary with `400 VALIDATION_ERROR`.
+
+### 5. Date Range Filtering
+
+- Filter parameters `from` and `to` are validated using strict ISO 8601 date parsing.
+- Query interval follows a mathematically sound half-open interval:
+  ```sql
+  s.created_at >= $from AND s.created_at < $to
+  ```
+- Cross-validation ensures `from <= to`; invalid ordering produces an immediate `400 VALIDATION_ERROR`.
+
+### 6. SQL Aggregate Statistics Strategy
+
+- Rather than loading raw submission rows into Node.js application memory, aggregate metrics are computed inside PostgreSQL in a single aggregation query:
+  ```sql
+  SELECT
+    COUNT(*)::int AS total_submissions,
+    COUNT(*) FILTER (WHERE s.created_at >= CURRENT_DATE)::int AS today,
+    COUNT(*) FILTER (WHERE s.created_at >= DATE_TRUNC('week', NOW()))::int AS this_week,
+    COUNT(*) FILTER (WHERE s.created_at >= DATE_TRUNC('month', NOW()))::int AS this_month
+  FROM submissions s
+  WHERE s.tenant_id = $1
+    AND ($2::uuid IS NULL OR s.widget_id = $2);
+  ```
+- Per-widget submission breakdowns are computed via `LEFT JOIN submissions s ON s.widget_id = w.id AND s.tenant_id = $1` grouped by widget, ensuring widgets with zero submissions are still accurately reported.
+- Supports optional widget scoping (`?widgetId=<uuid>`), verified for tenant ownership.
+
+### 7. Privacy & Data Minimization
+
+- **IP Address & User-Agent Handling**: The database stores visitor IP and user-agent strings for security audit and rate-limiting purposes. However, dashboard API responses intentionally exclude visitor IP addresses and raw user-agent strings to protect end-user privacy (GDPR / CCPA data minimization principle).
+- **Sensitive Fields Redaction**: Password hashes, internal locks (`locked_at`, `locked_by`), raw database error stacks, and authentication secrets are never exposed in any dashboard endpoint.
+- **Structured JSON Representation**: Submission payloads are returned as structured JSON objects, never concatenated or rendered as raw HTML, preventing stored cross-site scripting (XSS) attacks.
+
+### 8. Database Performance & Indexing
+
+- The default query (`WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3`) is fully supported by the pre-existing composite index:
+  ```sql
+  CREATE INDEX idx_submissions_tenant_created ON submissions(tenant_id, created_at DESC);
+  ```
+- Filtering by widget utilizes `idx_submissions_widget_created` on `(widget_id, created_at DESC)`.
+- Foreign key constraints with `ON DELETE CASCADE` ensure integrity when tenants or widgets are removed.

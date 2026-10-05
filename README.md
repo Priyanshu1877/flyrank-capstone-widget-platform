@@ -6,9 +6,9 @@ The FlyRank Embeddable Widget & Lead-Capture Platform is a multi-tenant backend 
 
 ## Current Status
 
-**Phase 2C-3 — Background Jobs & Reliable Side Effects Completed**
+**Phase 3A — Dashboard & Lead Management Backend Completed**
 
-Phase 2C-3 is implemented and verified. The platform includes a PostgreSQL-backed Transactional Outbox pattern guaranteeing atomic persistence of lead submissions and background jobs in the same transaction, safe row-level job claiming using `FOR UPDATE SKIP LOCKED`, exponential backoff retry scheduling (30s → 120s → 600s), permanent failure dead-letter handling with immutable audit logs in `job_failures`, idempotent processing, stale lock recovery, and graceful worker shutdown (`SIGINT`/`SIGTERM`). 102 automated integration tests are passing with a 100% pass rate.
+Phase 3A is implemented and verified. The platform provides authenticated, tenant-isolated backend APIs for dashboard and lead management: paginated and whitelisted-sorted lead submission inspection, strict widget and half-open date interval filtering (`from`/`to`), single submission detail retrieval with privacy-safe field exposure (visitor IP and user agent omitted), high-performance SQL aggregate statistics (`totalSubmissions`, `today`, `thisWeek`, `thisMonth`, `byWidget`), tenant-scoped background job observability, and widget listing. 141 automated integration tests are passing with a 100% pass rate.
 
 ## System Architecture & Specifications
 
@@ -48,7 +48,13 @@ Implemented & planned components:
   - Immutable attempt history audit in `job_failures`.
   - Stale processing lock recovery and graceful shutdown (`SIGINT`/`SIGTERM`).
   - Minimal job payload (`submissionId`, `widgetId`, `jobType`) with zero personal data duplication.
-- **Tenant Dashboard (Planned Phase 2F)**: Scoped analytical endpoints for lead tracking, submission trends, and geographic breakdown.
+- **Tenant Dashboard & Lead Management API (Implemented - Phase 3A)**:
+  - Strict tenant-isolated lead inspection (`GET /api/v1/dashboard/submissions`) with pagination (`page`, `limit` up to 100), whitelisted sorting (`created_at_desc`, `created_at_asc`), widget scoping, and ISO date range boundaries (`from`/`to`).
+  - Single submission detail retrieval (`GET /api/v1/dashboard/submissions/:id`) with privacy-conscious fields (visitor IP and user-agent omitted) and safe `404 Not Found` responses that never leak cross-tenant entity existence.
+  - High-performance SQL aggregate metrics (`GET /api/v1/dashboard/submissions/stats`) computing `totalSubmissions`, `today`, `thisWeek`, `thisMonth`, and `byWidget` breakdown using single-query SQL filters.
+  - Operational job monitoring (`GET /api/v1/dashboard/jobs`) exposing execution status and retry counters while preventing sensitive payload leaks.
+  - Tenant widget metadata list (`GET /api/v1/dashboard/widgets`).
+- **Dashboard Frontend UI (Planned - Phase 3B)**: Web client interface for visual charts, submissions tables, and lead exports.
 
 ## Tech Stack
 
@@ -58,7 +64,7 @@ Implemented & planned components:
 - **Password Hashing**: bcryptjs (10 salt rounds)
 - **Authentication**: Stateless JSON Web Tokens (jsonwebtoken)
 - **Validation**: Zod
-- **Testing**: Vitest & Supertest (102 tests passing)
+- **Testing**: Vitest & Supertest (141 tests passing)
 - **Code Quality**: ESLint (Flat Config) & Prettier
 
 ## Local Development
@@ -285,6 +291,103 @@ Delivers embeddable JavaScript loader. Returns `Cache-Control: public, max-age=3
 
 ---
 
+### Authenticated Dashboard & Lead Management Endpoints
+
+All dashboard endpoints require a valid JWT bearer token in the `Authorization: Bearer <token>` header and enforce strict repository-level tenant scoping (`tenant_id = $authTenantId`). Cross-tenant access attempts return safe `404 Not Found` responses to prevent leaking resource existence.
+
+#### 1. List Submissions
+
+`GET /api/v1/dashboard/submissions`
+
+- **Query Parameters**:
+  - `page` (optional integer >= 1, default `1`)
+  - `limit` (optional integer between 1 and 100, default `20`)
+  - `sort` (optional: `created_at_desc` [default], `created_at_asc`)
+  - `widgetId` (optional UUIDv4, strictly verified to belong to authenticated tenant)
+  - `from` (optional ISO 8601 date string, half-open interval: `created_at >= from`)
+  - `to` (optional ISO 8601 date string, half-open interval: `created_at < to`)
+- **Response (200 OK)**:
+  ```json
+  {
+    "status": "success",
+    "data": [
+      {
+        "id": "c138d948-261f-4444-a957-3f3c30656a8d",
+        "submissionId": "c138d948-261f-4444-a957-3f3c30656a8d",
+        "widgetId": "73bc5b66-0db9-46f3-9d0b-21d9f4851eb3",
+        "widgetName": "Contact Sales Form",
+        "payload": { "name": "Alice Smith", "email": "alice@example.com" },
+        "geoCountry": "US",
+        "geoCity": "San Francisco",
+        "geoProvider": "provider_a",
+        "origin": "https://tenant-site.com",
+        "createdAt": "2026-10-05T09:30:00.000Z"
+      }
+    ],
+    "pagination": {
+      "page": 1,
+      "limit": 20,
+      "total": 1,
+      "totalPages": 1
+    }
+  }
+  ```
+
+#### 2. Get Submission Detail
+
+`GET /api/v1/dashboard/submissions/:id`
+
+- Returns safe submission detail if `submission.tenant_id === req.auth.tenantId`.
+- Excludes sensitive fields (visitor IP address and user-agent omitted for privacy).
+- If the submission does not exist or belongs to another tenant, returns HTTP `404 NOT_FOUND` with message `"Submission not found"`.
+
+#### 3. Submission Statistics
+
+`GET /api/v1/dashboard/submissions/stats`
+
+- **Query Parameters**:
+  - `widgetId` (optional UUIDv4, scoped to tenant)
+- **Response (200 OK)**:
+  ```json
+  {
+    "status": "success",
+    "data": {
+      "totalSubmissions": 42,
+      "today": 5,
+      "thisWeek": 18,
+      "thisMonth": 42,
+      "byWidget": [
+        {
+          "widgetId": "73bc5b66-0db9-46f3-9d0b-21d9f4851eb3",
+          "widgetName": "Contact Sales Form",
+          "count": 30
+        },
+        {
+          "widgetId": "f9a463db-f8aa-4e96-a81d-e5cf233306db",
+          "widgetName": "Newsletter Signup",
+          "count": 12
+        }
+      ]
+    }
+  }
+  ```
+
+#### 4. Operational Jobs Visibility
+
+`GET /api/v1/dashboard/jobs`
+
+- **Query Parameters**: `page` (default 1), `limit` (default 20, max 100), `status` (optional: `pending`, `processing`, `completed`, `failed`)
+- Returns paginated background jobs scoped strictly to the tenant.
+- Sensitive job payloads and database internals are omitted.
+
+#### 5. List Widgets
+
+`GET /api/v1/dashboard/widgets`
+
+- Returns all widgets belonging strictly to the authenticated tenant.
+
+---
+
 ## Local Demo
 
 A sample host page is provided in [`demo/index.html`](demo/index.html) to demonstrate cross-origin widget delivery:
@@ -313,14 +416,15 @@ flyrank-capstone-widget-platform/
 │   │   ├── auth/       # Identity, bcrypt, and JWT services & routes
 │   │   ├── widgets/    # Widget domain: types, schemas, repo, service, loader, routes
 │   │   ├── submissions/# Submission domain: types, schemas, repo, service, rate-limiter, routes
-│   │   └── jobs/       # Background jobs: types, repo, handler abstraction, side-effect handler
+│   │   ├── jobs/       # Background jobs: types, repo, handler abstraction, side-effect handler
+│   │   └── dashboard/  # Dashboard domain: types, schemas, repo, service, routes
 │   ├── providers/
 │   │   └── geo/        # Geo-enrichment strategy: IGeoProvider, MockProviderA, MockProviderB, GeoService
 │   ├── workers/        # Background worker process (job-worker.ts) with FOR UPDATE SKIP LOCKED
 │   ├── shared/         # Database pool, migrations, and shared types
 │   ├── app.ts          # Express application initialization and route mounting
 │   └── server.ts       # Server entrypoint and lifecycle listener
-├── tests/              # Test suites (Vitest / Supertest - 102 tests passing)
+├── tests/              # Test suites (Vitest / Supertest - 141 tests passing)
 │   ├── health.test.ts
 │   ├── db.test.ts
 │   ├── auth.test.ts
@@ -329,7 +433,8 @@ flyrank-capstone-widget-platform/
 │   ├── widget-delivery.test.ts
 │   ├── submissions.test.ts
 │   ├── abuse-and-geo.test.ts
-│   └── jobs-and-worker.test.ts
+│   ├── jobs-and-worker.test.ts
+│   └── dashboard.test.ts
 ├── db/
 │   ├── migrations/     # 001_identity_domain.sql, 002_widget_domain.sql, 003_submissions_domain.sql, 004_jobs_domain.sql
 │   └── migrate.ts      # Automated database migration runner
@@ -362,5 +467,5 @@ The project uses a typed configuration schema in [`src/config/env.ts`](src/confi
 
 ## Limitations
 
-This is **Phase 2C-3**. Identity (Phase 2A), Widget Management & Delivery (Phase 2B), Hardened Lead Submission Persistence & Idempotency (Phase 2C-1), Abuse Protection, Honeypot & Geo Enrichment (Phase 2C-2), and Background Jobs, Transactional Outbox & Reliable Side Effects (Phase 2C-3) are implemented.
-Dashboard UI, analytics queries, and real external email/webhook notification services are deferred to subsequent phases.
+This is **Phase 3A**. Identity (Phase 2A), Widget Management & Delivery (Phase 2B), Hardened Lead Submission Persistence & Idempotency (Phase 2C-1), Abuse Protection, Honeypot & Geo Enrichment (Phase 2C-2), Background Jobs, Transactional Outbox & Reliable Side Effects (Phase 2C-3), and Dashboard Lead Management Backend (Phase 3A) are implemented and verified.
+Dashboard frontend client (Phase 3B), charts UI, and external email/webhook notifications are deferred to subsequent phases.

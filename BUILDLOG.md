@@ -592,4 +592,99 @@ Key achievements:
 ### Known Limitations
 
 - Real external email, SMS, and webhook integrations are intentionally deferred to future production deployment phases.
-- Dashboard analytics and administrative job management interfaces are deferred to Phase 2F.
+- Dashboard frontend UI and visual chart components are deferred to Phase 3B.
+
+---
+
+## Phase 3A — Dashboard & Lead Management Backend
+
+**Date**: October 5, 2026
+
+### Objective
+
+Implement backend/API-only dashboard and lead management capabilities for authenticated customer tenants:
+
+1. Paginated, sorted, and filtered lead submission listing (`GET /api/v1/dashboard/submissions`).
+2. Single submission detail inspection with safe field exposure (`GET /api/v1/dashboard/submissions/:id`).
+3. High-performance SQL aggregate submission metrics (`GET /api/v1/dashboard/submissions/stats`).
+4. Operational background job visibility (`GET /api/v1/dashboard/jobs`).
+5. Tenant-scoped widget listing (`GET /api/v1/dashboard/widgets`).
+6. Comprehensive test suite demonstrating strict tenant isolation, anti-leakage 404 behavior, and SQL injection prevention.
+
+### Work Completed
+
+1. **Dashboard Module Architecture (`src/modules/dashboard/`)**:
+   - `dashboard.types.ts`: Defined strongly-typed interfaces for `DashboardSubmission`, `PaginationMeta`, `DashboardSubmissionsListResponse`, `DashboardStats`, `DashboardJobItem`, `DashboardJobsListResponse`, `DashboardWidgetItem`, and `ListSubmissionsFilter`.
+   - `dashboard.schema.ts`: Defined Zod schemas (`listSubmissionsQuerySchema`, `statsQuerySchema`, `listJobsQuerySchema`, `idParamSchema`) enforcing integer boundaries on `page` (>= 1) and `limit` (1-100), sort whitelist (`created_at_desc`, `created_at_asc`), ISO date validation, and UUID format verification.
+   - `dashboard.repository.ts`: Implemented `DashboardRepository` utilizing parameterized SQL queries strictly filtered by `s.tenant_id = $1` at the query root:
+     - `listSubmissions`: Computes paginated lead submissions with join to `widgets` for `widget_name`.
+     - `countSubmissions`: Parameterized count query for pagination metadata.
+     - `getSubmissionById`: Parameterized query ensuring `s.id = $1 AND s.tenant_id = $2`.
+     - `getStats`: High-performance single-query SQL aggregation using `COUNT(*)::int`, `COUNT(*) FILTER (...)` for today, this week, and this month, plus per-widget left join aggregation.
+     - `listJobs` and `countJobs`: Parameterized operational job queries scoped strictly to tenant.
+     - `listWidgets`: Returns safe widget metadata for tenant.
+   - `dashboard.service.ts`: Implemented `DashboardService` validating query filters, verifying widget ownership before filtering/aggregating, validating date coherence (`from <= to`), and calculating `totalPages`.
+   - `dashboard.routes.ts`: Mounted authenticated router protected by `requireAuth` middleware. Route `/submissions/stats` mounted before `/submissions/:id` to prevent route shadowing.
+2. **Express App Integration (`src/app.ts`)**:
+   - Mounted `dashboardRouter` under `/api/v1/dashboard`.
+3. **Automated Test Suite (`tests/dashboard.test.ts`)**:
+   - Implemented 39 automated integration tests covering:
+     - Authentication required (401 on missing or invalid token).
+     - Default and custom pagination (`page`, `limit`), capping limit at 100, rejecting `page < 1`, `limit < 1`, `limit > 100`, and non-integers (400).
+     - Sorting safe whitelist (`created_at_desc` default, `created_at_asc`, rejecting unwhitelisted sort with 400).
+     - Widget filtering for owned widgets, returning 404 Not Found for foreign tenant widgets (anti-leakage).
+     - Date filtering with half-open intervals (`from`, `to`), rejecting malformed dates and inverted ranges (`from > to`) with 400.
+     - Strict cross-tenant isolation: Tenant A cannot see Tenant B submissions, cannot retrieve Tenant B submission by ID (returns safe 404), cannot view Tenant B jobs, and cannot view Tenant B widgets.
+     - Submission detail returns safe fields (`id`, `submissionId`, `widgetId`, `widgetName`, `payload`, `geoCountry`, `geoCity`, `geoProvider`, `origin`, `createdAt`).
+     - Privacy audit: Confirmed visitor IP addresses and user agents are excluded from responses.
+     - Aggregate statistics: SQL aggregations verified for tenant accuracy, cross-tenant isolation, and widget-scoped filters.
+     - Operational background job visibility: verified tenant scoping and omission of internal payload/error secrets.
+     - Security & SQL injection prevention: verified injection strings in `page`, `sort`, `from`, and `widgetId` are safely rejected with 400.
+
+### Developer Decisions
+
+1. **Backend/API Only Scope**:
+   - Strictly preserved scope: zero frontend, React, or chart components built. The API returns pure structured JSON.
+2. **Tenant Scoping at the Database Query Level**:
+   - In accordance with architectural principles, tenant checks are enforced directly in PostgreSQL query `WHERE` clauses (`s.tenant_id = $tenantId`), avoiding any risk of post-query filtering leaks.
+3. **Safe 404 Anti-Leakage Behavior**:
+   - If Tenant A attempts to fetch a submission ID or filter by a widget ID belonging to Tenant B, the API returns a generic `404 NOT_FOUND` rather than `403 FORBIDDEN`. This completely prevents malicious callers from enumerating the existence of foreign tenant assets.
+4. **Visitor Privacy Design**:
+   - While client IP and user-agent are stored for abuse mitigation and rate-limiting, they are intentionally excluded from dashboard lead responses to comply with GDPR/CCPA data minimization guidelines.
+5. **In-Database Aggregations**:
+   - Statistics queries leverage PostgreSQL `FILTER (WHERE ...)` and `DATE_TRUNC` aggregations, eliminating memory bloat and scaling efficiently without requiring a separate analytics data store.
+
+### AI Assistance Used
+
+- Antigravity was used as an AI pair programming assistant to scaffold Zod schemas, design parameterized SQL queries for dashboard filtering, build `dashboard.routes.ts`, implement the 39 tests in `tests/dashboard.test.ts`, and run manual verification probes.
+
+### Verification Performed
+
+1. **Automated Integration Test Suite**:
+   - `npm test` (`vitest run`):
+     - `tests/health.test.ts` (1 test passed)
+     - `tests/db.test.ts` (2 tests passed)
+     - `tests/auth.test.ts` (13 tests passed)
+     - `tests/tenant-isolation.test.ts` (5 tests passed)
+     - `tests/widget-crud.test.ts` (15 tests passed)
+     - `tests/widget-delivery.test.ts` (11 tests passed)
+     - `tests/submissions.test.ts` (20 tests passed)
+     - `tests/abuse-and-geo.test.ts` (17 tests passed)
+     - `tests/jobs-and-worker.test.ts` (18 tests passed)
+     - `tests/dashboard.test.ts` (39 tests passed)
+     - Total: **10 test files, 141 tests passed (100% pass rate)**.
+2. **Type Checking & Code Quality**:
+   - `npm run typecheck` (`tsc --noEmit`) -> Exit 0 (zero errors).
+   - `npm run lint` (`eslint .`) -> Exit 0 (zero errors, zero warnings).
+   - `npm run format:check` (`prettier --check .`) -> Exit 0 (all files formatted).
+3. **Production Build**:
+   - `npm run build` (`tsc`) -> Exit 0 (`dist/` generated cleanly).
+4. **Live Manual End-to-End Verification (Probes A through I)**:
+   - **Probe A**: Registered & logged in as Tenant A.
+   - **Probe B**: Created and listed Tenant A submissions (received expected payload and pagination).
+   - **Probe C**: Registered & logged in as Tenant B.
+   - **Probe D**: Verified Tenant B cannot see Tenant A data (count = 0).
+   - **Probe E & F**: Requested Tenant A submission ID as Tenant B -> received safe HTTP 404 `NOT_FOUND` ("Submission not found").
+   - **Probe G**: Verified pagination (`page=1, limit=10, total=1, totalPages=1`).
+   - **Probe H**: Verified widget filtering (owned widget succeeded; foreign widget returned HTTP 404).
+   - **Probe I**: Verified aggregate statistics (Tenant A total=1, today=1; Tenant B total=0, today=0).

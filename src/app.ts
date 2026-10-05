@@ -7,6 +7,7 @@ import { authRouter } from './modules/auth/auth.routes.js';
 import { widgetDeliveryRouter } from './modules/widgets/widget-delivery.routes.js';
 import { widgetRouter } from './modules/widgets/widget.routes.js';
 import { submissionRouter } from './modules/submissions/submission.routes.js';
+import { dashboardRouter } from './modules/dashboard/dashboard.routes.js';
 
 export const createApp = (): Express => {
   const app = express();
@@ -42,6 +43,9 @@ export const createApp = (): Express => {
 
   // Authenticated Widget Management routes
   app.use('/api/v1/widgets', widgetRouter);
+
+  // Authenticated Dashboard & Lead Management routes
+  app.use('/api/v1/dashboard', dashboardRouter);
 
   // Central error handling middleware
   app.use(errorHandler);

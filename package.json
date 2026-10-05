@@ -8,6 +8,7 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
+    "worker": "tsx src/workers/job-worker.ts",
     "db:migrate": "tsx db/migrate.ts",
     "test": "vitest run",
     "test:watch": "vitest",

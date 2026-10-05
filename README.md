@@ -6,9 +6,9 @@ The FlyRank Embeddable Widget & Lead-Capture Platform is a multi-tenant backend 
 
 ## Current Status
 
-**Phase 2C-2 — Abuse Protection, Honeypot & Geo Enrichment Completed**
+**Phase 2C-3 — Background Jobs & Reliable Side Effects Completed**
 
-Phase 2C-2 is implemented and verified. The platform includes full server-side rate limiting per client IP (in-memory sliding window, HTTP `429 RATE_LIMIT_EXCEEDED` with `Retry-After` header, multi-widget IP lock), honeypot spam protection (`_hp_title` and `_website` hidden traps returning `400 SPAM_DETECTED` with zero DB persistence and zero provider invocation), and a robust geo-enrichment failover architecture (Mock Provider A primary, Mock Provider B fallback, 500ms timeout containment, and graceful nil-degradation storing `NULL` geo fields while guaranteeing lead capture returns `201 Created`). 84 automated integration tests are passing with a 100% pass rate.
+Phase 2C-3 is implemented and verified. The platform includes a PostgreSQL-backed Transactional Outbox pattern guaranteeing atomic persistence of lead submissions and background jobs in the same transaction, safe row-level job claiming using `FOR UPDATE SKIP LOCKED`, exponential backoff retry scheduling (30s → 120s → 600s), permanent failure dead-letter handling with immutable audit logs in `job_failures`, idempotent processing, stale lock recovery, and graceful worker shutdown (`SIGINT`/`SIGTERM`). 102 automated integration tests are passing with a 100% pass rate.
 
 ## System Architecture & Specifications
 
@@ -17,7 +17,7 @@ The complete, authoritative system architecture, entity relationship schema, RES
 Implemented & planned components:
 
 - **Tenant Management & Authentication (Implemented - Phase 2A)**: Secure JWT-based access for tenant administration with strict repository-level isolation.
-- **Relational Storage (Implemented - Phases 2A, 2B, 2C-1, 2C-2)**: PostgreSQL 16 schema with UUIDv4 primary keys, connection pooling, automated migrations (`001_identity_domain.sql`, `002_widget_domain.sql`, `003_submissions_domain.sql`), storing lead payloads and resolved geo (`geo_country`, `geo_city`, `geo_provider`).
+- **Relational Storage (Implemented - Phases 2A, 2B, 2C-1, 2C-2, 2C-3)**: PostgreSQL 16 schema with UUIDv4 primary keys, connection pooling, automated migrations (`001_identity_domain.sql`, `002_widget_domain.sql`, `003_submissions_domain.sql`, `004_jobs_domain.sql`), storing tenants, users, widgets, submissions, jobs, and job failure records.
 - **Widget Service & Delivery (Implemented - Phase 2B)**:
   - Tenant-scoped CRUD (`POST /api/v1/widgets`, `GET /api/v1/widgets`, `GET /api/v1/widgets/:id`, `PATCH /api/v1/widgets/:id`, `DELETE /api/v1/widgets/:id`).
   - Automatic version tracking on configuration updates.
@@ -40,7 +40,14 @@ Implemented & planned components:
   - 500ms timeout containment via `Promise.race`.
   - Non-critical best-effort degradation: if both providers fail or time out, `geo_country`, `geo_city`, and `geo_provider` remain `NULL` and lead capture still succeeds (`201 Created`).
   - Idempotent replays safely skip geo-enrichment.
-- **Async Processing (Planned Phase 2E)**: Transactional outbox job queue (`jobs` table) with worker row locking (`FOR UPDATE SKIP LOCKED`), exponential backoff retries, and dead-letter isolation (`job_failures`).
+- **Background Jobs & Transactional Outbox (Implemented - Phase 2C-3)**:
+  - Atomic submission and job creation within the same PostgreSQL transaction.
+  - Asynchronous background worker (`npm run worker`) using PostgreSQL row-level locking (`FOR UPDATE SKIP LOCKED`).
+  - Centralized retry scheduling with exponential backoff delays (30s, 120s, 600s).
+  - Dead-letter state (`status = 'failed'`) after max attempts (3 retries / 4 total attempts).
+  - Immutable attempt history audit in `job_failures`.
+  - Stale processing lock recovery and graceful shutdown (`SIGINT`/`SIGTERM`).
+  - Minimal job payload (`submissionId`, `widgetId`, `jobType`) with zero personal data duplication.
 - **Tenant Dashboard (Planned Phase 2F)**: Scoped analytical endpoints for lead tracking, submission trends, and geographic breakdown.
 
 ## Tech Stack
@@ -51,7 +58,7 @@ Implemented & planned components:
 - **Password Hashing**: bcryptjs (10 salt rounds)
 - **Authentication**: Stateless JSON Web Tokens (jsonwebtoken)
 - **Validation**: Zod
-- **Testing**: Vitest & Supertest (84 tests passing)
+- **Testing**: Vitest & Supertest (102 tests passing)
 - **Code Quality**: ESLint (Flat Config) & Prettier
 
 ## Local Development
@@ -305,13 +312,15 @@ flyrank-capstone-widget-platform/
 │   ├── modules/
 │   │   ├── auth/       # Identity, bcrypt, and JWT services & routes
 │   │   ├── widgets/    # Widget domain: types, schemas, repo, service, loader, routes
-│   │   └── submissions/# Submission domain: types, schemas, repo, service, rate-limiter, routes
+│   │   ├── submissions/# Submission domain: types, schemas, repo, service, rate-limiter, routes
+│   │   └── jobs/       # Background jobs: types, repo, handler abstraction, side-effect handler
 │   ├── providers/
 │   │   └── geo/        # Geo-enrichment strategy: IGeoProvider, MockProviderA, MockProviderB, GeoService
+│   ├── workers/        # Background worker process (job-worker.ts) with FOR UPDATE SKIP LOCKED
 │   ├── shared/         # Database pool, migrations, and shared types
 │   ├── app.ts          # Express application initialization and route mounting
 │   └── server.ts       # Server entrypoint and lifecycle listener
-├── tests/              # Test suites (Vitest / Supertest - 84 tests passing)
+├── tests/              # Test suites (Vitest / Supertest - 102 tests passing)
 │   ├── health.test.ts
 │   ├── db.test.ts
 │   ├── auth.test.ts
@@ -319,9 +328,10 @@ flyrank-capstone-widget-platform/
 │   ├── widget-crud.test.ts
 │   ├── widget-delivery.test.ts
 │   ├── submissions.test.ts
-│   └── abuse-and-geo.test.ts
+│   ├── abuse-and-geo.test.ts
+│   └── jobs-and-worker.test.ts
 ├── db/
-│   ├── migrations/     # 001_identity_domain.sql, 002_widget_domain.sql, 003_submissions_domain.sql
+│   ├── migrations/     # 001_identity_domain.sql, 002_widget_domain.sql, 003_submissions_domain.sql, 004_jobs_domain.sql
 │   └── migrate.ts      # Automated database migration runner
 ├── docs/               # Architectural documentation (ARCHITECTURE.md)
 ├── demo/               # Cross-origin client test harness (index.html, serve.js)
@@ -352,5 +362,5 @@ The project uses a typed configuration schema in [`src/config/env.ts`](src/confi
 
 ## Limitations
 
-This is **Phase 2C-2**. Identity (Phase 2A), Widget Management & Delivery (Phase 2B), Hardened Lead Submission Persistence & Idempotency (Phase 2C-1), and Abuse Protection, Honeypot & Geo Enrichment with Graceful Degradation (Phase 2C-2) are implemented.
-Background workers, transactional outbox (`jobs`), job retry queues, dead-letter logging, and dashboard analytics are deferred to subsequent phases.
+This is **Phase 2C-3**. Identity (Phase 2A), Widget Management & Delivery (Phase 2B), Hardened Lead Submission Persistence & Idempotency (Phase 2C-1), Abuse Protection, Honeypot & Geo Enrichment (Phase 2C-2), and Background Jobs, Transactional Outbox & Reliable Side Effects (Phase 2C-3) are implemented.
+Dashboard UI, analytics queries, and real external email/webhook notification services are deferred to subsequent phases.

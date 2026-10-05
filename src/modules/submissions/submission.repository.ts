@@ -1,6 +1,8 @@
 import type { PoolClient } from 'pg';
-import { query } from '../../shared/db.js';
+import { query, getClient } from '../../shared/db.js';
 import type { InsertSubmissionParams, Submission } from './submission.types.js';
+import { jobRepository } from '../jobs/job.repository.js';
+import type { Job } from '../jobs/job.types.js';
 
 interface SubmissionRow {
   id: string;
@@ -33,6 +35,67 @@ const mapRowToSubmission = (row: SubmissionRow): Submission => ({
 });
 
 export class SubmissionRepository {
+  /**
+   * Atomically inserts a submission and a corresponding outbox job in the same PostgreSQL transaction.
+   * If submission insertion conflicts on idempotency key, skips job creation and returns null submission.
+   * If any insert fails, the entire transaction is rolled back.
+   */
+  async createWithJob(
+    submissionParams: InsertSubmissionParams,
+    jobPayload: { widgetId: string; jobType: string },
+    externalClient?: PoolClient,
+  ): Promise<{ submission: Submission | null; job: Job | null }> {
+    const client = externalClient ?? (await getClient());
+    const shouldManageTransaction = !externalClient;
+
+    try {
+      if (shouldManageTransaction) {
+        await client.query('BEGIN');
+      }
+
+      // 1. Insert submission
+      const sub = await this.insert(submissionParams, client);
+
+      if (!sub) {
+        // Idempotency conflict: existing row was not inserted
+        if (shouldManageTransaction) {
+          await client.query('COMMIT');
+        }
+        return { submission: null, job: null };
+      }
+
+      // 2. Insert outbox job referencing the submission
+      const job = await jobRepository.insert(
+        {
+          tenantId: sub.tenantId,
+          jobType: jobPayload.jobType,
+          payload: {
+            submissionId: sub.id,
+            widgetId: jobPayload.widgetId,
+            jobType: jobPayload.jobType,
+          },
+          maxAttempts: 3,
+        },
+        client,
+      );
+
+      if (shouldManageTransaction) {
+        await client.query('COMMIT');
+      }
+
+      return { submission: sub, job };
+    } catch (err) {
+      if (shouldManageTransaction) {
+        await client.query('ROLLBACK');
+      }
+      throw err;
+    } finally {
+      if (shouldManageTransaction) {
+        client.release();
+      }
+    }
+  }
+
   /**
    * Attempts to insert a submission.
    * If (widget_id, idempotency_key) already exists, ON CONFLICT DO NOTHING returns null,

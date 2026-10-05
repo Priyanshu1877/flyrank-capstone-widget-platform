@@ -1258,3 +1258,92 @@ To maintain a lean, robust, and reviewable architecture for the capstone, the fo
    - The application configures Express `trust proxy` securely (`loopback` in production, configurable for upstream reverse proxies like Cloudflare or Nginx).
    - Arbitrary client-provided `X-Forwarded-For` headers are not blindly trusted from untrusted networks.
    - Client IP addresses are never echoed back in API response bodies.
+
+---
+
+## Phase 2C-3 Implementation Notes
+
+### Background Jobs, Transactional Outbox & Reliable Side Effects
+
+1. **Transactional Outbox Architecture**:
+   - **Atomicity Guarantee**: Lead submissions and background job scheduling occur within the _exact same_ PostgreSQL transaction (`BEGIN ... INSERT submissions ... INSERT jobs ... COMMIT`).
+   - **Failure Rollback**: If the submission insert fails, no job is scheduled; if the job insert fails, the submission is rolled back. The system completely eliminates the dual-write hazard where a lead exists but its side-effect was never scheduled.
+   - **Idempotency Replay Safety**: Idempotent replays matching an existing submission return `200 OK` with the existing submission ID and schedule zero duplicate jobs.
+   - **Payload Minimization**: Outbox jobs store only essential identifiers:
+     ```json
+     {
+       "submissionId": "<uuid>",
+       "widgetId": "<uuid>",
+       "jobType": "submission.side_effect"
+     }
+     ```
+     Personal lead attributes (names, email addresses, custom form values) are never duplicated into the `jobs` table.
+
+2. **Persistent Jobs Schema (`jobs`)**:
+   - `id`: UUID Primary Key (`gen_random_uuid()`).
+   - `tenant_id`: UUID Foreign Key referencing `tenants(id) ON DELETE CASCADE`.
+   - `job_type`: TEXT NOT NULL (e.g. `submission.side_effect`).
+   - `status`: TEXT NOT NULL DEFAULT 'pending' CHECK (`status IN ('pending', 'processing', 'completed', 'failed')`).
+   - `payload`: JSONB NOT NULL storing minimal execution metadata.
+   - `attempts`: INTEGER NOT NULL DEFAULT 0.
+   - `max_attempts`: INTEGER NOT NULL DEFAULT 3.
+   - `available_at`: TIMESTAMPTZ NOT NULL DEFAULT NOW().
+   - `locked_at`: TIMESTAMPTZ NULL.
+   - `locked_by`: TEXT NULL (worker identifier, e.g. `worker-<uuid>`).
+   - `last_error`: TEXT NULL.
+   - Timestamps: `created_at`, `updated_at`, `completed_at`.
+   - **Indexes**:
+     - `idx_jobs_claim`: ON `jobs (status, available_at)`.
+     - `idx_jobs_tenant_id`: ON `jobs (tenant_id)`.
+     - `idx_jobs_created_at`: ON `jobs (created_at DESC)`.
+     - `idx_jobs_locked_at`: ON `jobs (locked_at)`.
+
+3. **Job Failure Audit Schema (`job_failures`)**:
+   - `id`: UUID Primary Key (`gen_random_uuid()`).
+   - `job_id`: UUID Foreign Key referencing `jobs(id) ON DELETE CASCADE`.
+   - `tenant_id`: UUID Foreign Key referencing `tenants(id) ON DELETE CASCADE`.
+   - `attempt`: INTEGER NOT NULL.
+   - `error_code`: TEXT NULL (e.g. `EXECUTION_FAILED`, `HANDLER_NOT_FOUND`).
+   - `error_message`: TEXT NOT NULL (sanitized of sensitive tokens or credentials).
+   - `failed_at`: TIMESTAMPTZ NOT NULL DEFAULT NOW().
+   - **Indexes**: `idx_job_failures_job_id`, `idx_job_failures_tenant_id`, `idx_job_failures_failed_at`.
+
+4. **Safe Job Claiming (`FOR UPDATE SKIP LOCKED`)**:
+   - Workers query for candidate jobs using PostgreSQL row-level locking:
+     ```sql
+     SELECT id FROM jobs
+     WHERE ((status = 'pending' AND available_at <= NOW())
+        OR (status = 'processing' AND locked_at < NOW() - ($1 || ' milliseconds')::interval))
+       AND ($2::uuid IS NULL OR tenant_id = $2)
+     ORDER BY available_at ASC, created_at ASC
+     FOR UPDATE SKIP LOCKED
+     LIMIT 1;
+     ```
+   - Two concurrent workers can never claim the same job simultaneously.
+   - Database transactions are held strictly during the atomic claim-and-lock phase; the transaction is committed _before_ invoking the job handler, preventing long-lived transactions or connection pool starvation.
+
+5. **Retry Policy & Exponential Backoff**:
+   - Default schedule for failed attempts:
+     - **Attempt 1 failure**: retry scheduled after **30 seconds** (`available_at = NOW() + INTERVAL '30 seconds'`).
+     - **Attempt 2 failure**: retry scheduled after **120 seconds** (`available_at = NOW() + INTERVAL '120 seconds'`).
+     - **Attempt 3 failure**: retry scheduled after **600 seconds** (`available_at = NOW() + INTERVAL '600 seconds'`).
+     - **Attempt 4 failure**: retries exhausted (`attempts > max_attempts`). Job status transitions to `failed` (dead-letter state).
+   - Every failure records an immutable entry in `job_failures` preserving complete audit history.
+
+6. **Stale Lock Recovery**:
+   - If a worker crashes or encounters an unhandled process exit while executing a job (`status = 'processing'`), the lock becomes stale once `locked_at < NOW() - staleTimeoutMs` (default 5 minutes).
+   - Subsequent worker polling passes automatically detect the stale lock, re-claim the row, increment `attempts`, and re-execute or failover.
+
+7. **Deterministic Side-Effect Handler**:
+   - `IJobHandler` abstraction registered through `JobHandlerRegistry`.
+   - `SubmissionSideEffectHandler` handles `submission.side_effect` with deterministic configurable test hooks (`success`, `transient_failure`, `permanent_failure`). No external services (emails, SMS, webhooks) are called.
+
+8. **Worker Lifecycle & Graceful Shutdown**:
+   - `JobWorker` manages an asynchronous non-blocking polling loop (`start()`, `stop()`, `runOnce()`).
+   - CLI runner listens for `SIGINT` and `SIGTERM`, stopping new job claims, waiting for active jobs to complete, and cleanly releasing resources before exiting.
+   - Run locally via `npm run worker`.
+
+9. **Security, Sanitization & Tenant Isolation**:
+   - Error messages stored in `job_failures` and `jobs.last_error` are sanitized to redact authorization tokens, passwords, and API keys.
+   - Full lead payloads are excluded from logs and jobs records.
+   - Worker queries enforce optional tenant scoping for tenant-isolated worker pools.

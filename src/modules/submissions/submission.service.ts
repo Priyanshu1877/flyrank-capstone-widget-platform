@@ -115,20 +115,28 @@ export class SubmissionService {
     // Non-critical dependency: failures must never abort lead submission
     const geoData: GeoLocation | null = await geoService.lookup(clientIp).catch(() => null);
 
-    // 8. Persistence into PostgreSQL
+    // 8. Atomic Persistence with Transactional Outbox (PostgreSQL Transaction)
+    const jobPayload = {
+      widgetId: widget.id,
+      jobType: 'submission.side_effect',
+    };
+
     if (key) {
-      const inserted = await submissionRepository.insert({
-        tenantId: widget.tenantId,
-        widgetId: widget.id,
-        idempotencyKey: key,
-        payload: validatedData,
-        ipAddress: meta.ip || null,
-        userAgent: meta.userAgent || null,
-        origin: matchedOrigin || meta.origin || null,
-        geoCountry: geoData?.country || null,
-        geoCity: geoData?.city || null,
-        geoProvider: geoData?.provider || null,
-      });
+      const { submission: inserted } = await submissionRepository.createWithJob(
+        {
+          tenantId: widget.tenantId,
+          widgetId: widget.id,
+          idempotencyKey: key,
+          payload: validatedData,
+          ipAddress: meta.ip || null,
+          userAgent: meta.userAgent || null,
+          origin: matchedOrigin || meta.origin || null,
+          geoCountry: geoData?.country || null,
+          geoCity: geoData?.city || null,
+          geoProvider: geoData?.provider || null,
+        },
+        jobPayload,
+      );
 
       if (inserted) {
         return {
@@ -168,18 +176,21 @@ export class SubmissionService {
     }
 
     // Non-idempotent submission (no key)
-    const inserted = await submissionRepository.insert({
-      tenantId: widget.tenantId,
-      widgetId: widget.id,
-      idempotencyKey: null,
-      payload: validatedData,
-      ipAddress: meta.ip || null,
-      userAgent: meta.userAgent || null,
-      origin: matchedOrigin || meta.origin || null,
-      geoCountry: geoData?.country || null,
-      geoCity: geoData?.city || null,
-      geoProvider: geoData?.provider || null,
-    });
+    const { submission: inserted } = await submissionRepository.createWithJob(
+      {
+        tenantId: widget.tenantId,
+        widgetId: widget.id,
+        idempotencyKey: null,
+        payload: validatedData,
+        ipAddress: meta.ip || null,
+        userAgent: meta.userAgent || null,
+        origin: matchedOrigin || meta.origin || null,
+        geoCountry: geoData?.country || null,
+        geoCity: geoData?.city || null,
+        geoProvider: geoData?.provider || null,
+      },
+      jobPayload,
+    );
 
     if (!inserted) {
       throw new Error('Failed to insert submission record');

@@ -1,6 +1,6 @@
 name: flyrank-capstone-widget-platform
 title: Embeddable Widget & Lead-Capture Platform
-phase: 'Phase 2C-2 - Abuse Protection & Geo Enrichment'
+phase: 'Phase 2C-3 - Background Jobs & Reliable Side Effects'
 track: Backend AI Engineering
 language: TypeScript
 runtime: Node.js
@@ -21,6 +21,7 @@ completed_phases:
   - phase_2b
   - phase_2c_1
   - phase_2c_2
+  - phase_2c_3
 features_implemented:
   - minimal_health_check
   - postgresql_connection_pool
@@ -44,6 +45,12 @@ features_implemented:
   - honeypot_spam_protection
   - geo_provider_fallback
   - geo_graceful_degradation
+  - transactional_outbox
+  - persistent_background_jobs
+  - safe_row_claiming_skip_locked
+  - exponential_backoff_retries
+  - dead_letter_job_failures
+  - stale_lock_recovery
 feature_flags:
   widget_crud: true
   widget_delivery: true
@@ -56,5 +63,5 @@ feature_flags:
   rate_limiting: true
   honeypot: true
   geo_enrichment: true
-  background_jobs: false
+  background_jobs: true
   dashboard: false

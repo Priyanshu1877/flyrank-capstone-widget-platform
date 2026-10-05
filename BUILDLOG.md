@@ -495,3 +495,101 @@ Key achievements:
 - In-memory rate limiting state is local to the Node.js process and does not synchronize across distributed replicas (Redis or API Gateway limiter required for clustered production).
 - Geo providers are deterministic mocks; real external geo APIs will be configured in a future production deployment phase.
 - Transactional outbox (`jobs` table), background worker processing, and dashboard analytics are deferred to subsequent phases.
+
+---
+
+## [Phase 2C-3] - Background Jobs, Transactional Outbox & Reliable Side Effects
+
+**Date**: 2026-10-05  
+**Scope**: Transactional outbox persistence, PostgreSQL persistent job queue, worker process with `FOR UPDATE SKIP LOCKED`, exponential backoff retry scheduling, dead-letter recording, and stale-lock recovery.
+
+### Objectives & Summary
+
+Implemented Phase 2C-3 to establish reliable, decoupled side-effect execution for public lead submissions using PostgreSQL as the persistent queuing system.
+
+Key achievements:
+
+1. **Database Migration (`004_jobs_domain.sql`)**:
+   - Created `jobs` table with UUID primary key, tenant foreign key with cascade delete, `job_type`, `status` with check constraint (`pending`, `processing`, `completed`, `failed`), `payload` JSONB, `attempts`, `max_attempts` (default 3), `available_at`, `locked_at`, `locked_by`, `last_error`, `created_at`, `updated_at`, `completed_at`.
+   - Created `job_failures` table for immutable attempt audit history (`id`, `job_id`, `tenant_id`, `attempt`, `error_code`, `error_message`, `failed_at`).
+   - Added performance indexes for claiming (`idx_jobs_claim`), tenant scoping, lock inspection, and failure history.
+2. **Transactional Outbox Architecture**:
+   - Extended `SubmissionRepository` with `createWithJob` to atomically insert both the submission row and corresponding outbox job (`job_type: 'submission.side_effect'`) within the _exact same_ PostgreSQL transaction (`BEGIN ... INSERT ... COMMIT`).
+   - If either operation fails, both are rolled back.
+   - Idempotent replays returning existing submissions schedule zero duplicate jobs.
+   - Rejections before persistence (CORS, validation, rate limiting, honeypot) schedule zero jobs.
+   - Payload minimization: only `{ submissionId, widgetId, jobType }` is stored in the job payload; personal lead fields are never duplicated.
+3. **Safe Worker Claiming (`FOR UPDATE SKIP LOCKED`)**:
+   - Implemented `JobWorker` with safe row-level locking via `SELECT ... FOR UPDATE SKIP LOCKED` inside a short-lived transaction.
+   - Each worker claims a job, assigns its unique identifier (`locked_by`), sets `status = 'processing'`, increments `attempts`, and commits _before_ executing the job handler.
+   - Prevents duplicate claims between concurrent workers without holding database locks open during job processing.
+4. **Retry Scheduling & Exponential Backoff**:
+   - Centralized backoff schedule:
+     - **Attempt 1 failure**: retries in **30 seconds** (`available_at = NOW() + 30s`).
+     - **Attempt 2 failure**: retries in **120 seconds** (`available_at = NOW() + 120s`).
+     - **Attempt 3 failure**: retries in **600 seconds** (`available_at = NOW() + 600s`).
+     - **Attempt 4 failure**: retries exhausted (`attempts > max_attempts`); marked permanently `failed` (dead-letter state).
+   - Every failure records an immutable row in `job_failures`.
+5. **Stale Lock Recovery**:
+   - Jobs stuck in `status = 'processing'` due to a crashed worker process become eligible for re-claiming once `locked_at < NOW() - staleTimeoutMs` (default 5 minutes).
+6. **Side-Effect Handler Abstraction**:
+   - Defined `IJobHandler` and `JobHandlerRegistry`.
+   - Implemented `SubmissionSideEffectHandler` for `submission.side_effect` with configurable test hooks (`success`, `transient_failure`, `permanent_failure`). No external email or webhook providers were called.
+7. **Graceful Shutdown & Observability**:
+   - Added signal handlers for `SIGINT` and `SIGTERM` in `src/workers/job-worker.ts`.
+   - Added `"worker": "tsx src/workers/job-worker.ts"` script to `package.json`.
+   - Error messages are sanitized before storage in `job_failures` and logs (tokens and passwords redacted).
+
+### Implementation Decisions
+
+1. **PostgreSQL as Job Queue vs. External Brokers**:
+   - Fully adhered to the capstone requirement to use PostgreSQL. No Redis, BullMQ, RabbitMQ, or Kafka infrastructure was introduced.
+2. **Transaction Separation During Handler Execution**:
+   - Committed the claiming transaction before executing the job handler. Holding database transactions open during potentially slow side effects degrades connection pool throughput.
+3. **Tenant-Scoped Worker Claiming**:
+   - `claimNextJob` supports an optional `tenantId` filter, enabling both global workers and tenant-isolated worker pools.
+4. **Payload Minimization**:
+   - Avoided copying sensitive user lead inputs into `jobs.payload` to preserve privacy and prevent database bloat.
+
+### AI Assistance Used
+
+- Assisted in drafting the `FOR UPDATE SKIP LOCKED` claim query and migration schema.
+- Assisted in architecting the retry backoff calculator and worker poll loop.
+- Assisted in generating the 18 comprehensive tests in `tests/jobs-and-worker.test.ts`.
+
+### Verification Performed
+
+1. **Automated Migration**:
+   - Applied `db/migrations/004_jobs_domain.sql` using `npm run db:migrate`.
+2. **Automated Integration Test Suite**:
+   - `npm test` (`vitest run`):
+     - `tests/health.test.ts` (1 test passed)
+     - `tests/db.test.ts` (2 tests passed)
+     - `tests/auth.test.ts` (13 tests passed)
+     - `tests/tenant-isolation.test.ts` (5 tests passed)
+     - `tests/widget-crud.test.ts` (15 tests passed)
+     - `tests/widget-delivery.test.ts` (11 tests passed)
+     - `tests/submissions.test.ts` (20 tests passed)
+     - `tests/abuse-and-geo.test.ts` (17 tests passed)
+     - `tests/jobs-and-worker.test.ts` (18 tests passed)
+     - Total: **9 test files, 102 tests passed (100% pass rate)** in 1.60s.
+3. **Type Checking & Code Quality**:
+   - `npm run typecheck` (`tsc --noEmit`) -> Exit 0 (zero errors).
+   - `npm run lint` (`eslint .`) -> Exit 0 (zero errors, zero warnings).
+   - `npm run format:check` (`prettier --check .`) -> Exit 0 (all files formatted).
+4. **Production Build**:
+   - `npm run build` (`tsc`) -> Exit 0 (`dist/` generated cleanly).
+5. **Live Manual End-to-End Verification (Probes A through J)**:
+   - **Probe A, B, C**: Public lead submission created both `submissions` row and `jobs` row (`status = 'pending'`, `attempts = 0`).
+   - **Probe D, E**: Worker executed job and transitioned status to `'completed'` with `completed_at` populated.
+   - **Probe F, G, H**: Transient failure caused job status to remain `'pending'`, `available_at` was scheduled +30s in future, and a failure record was created in `job_failures`.
+   - **Probe I**: When `available_at` elapsed, worker re-claimed the job and succeeded (`status = 'completed'`).
+   - **Probe J**: Permanent failure was retried across 4 attempts; upon exhausting `max_attempts` (3), job transitioned to `'failed'` and all 4 attempt records were preserved in `job_failures`.
+6. **Security & Secret Audit**:
+   - Confirmed `.env` remains untracked and excluded from git.
+   - Zero secrets or bearer tokens stored in `jobs` or `job_failures`.
+
+### Known Limitations
+
+- Real external email, SMS, and webhook integrations are intentionally deferred to future production deployment phases.
+- Dashboard analytics and administrative job management interfaces are deferred to Phase 2F.

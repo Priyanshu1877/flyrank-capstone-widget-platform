@@ -15,6 +15,7 @@ const envSchema = z.object({
   POSTGRES_DB: z.string().default('flyrank_widgets'),
   POSTGRES_PORT: z.coerce.number().default(5432),
   JWT_SECRET: z.string().default('change-this-to-a-secure-secret-in-production'),
+  WIDGET_BASE_URL: z.string().default('http://localhost:4000'),
 });
 
 const parsedEnv = envSchema.safeParse(process.env);

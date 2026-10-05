@@ -209,3 +209,97 @@ Antigravity was used as an AI pair programming and development assistant to writ
 
 - Phase 2A only covers database foundation, authentication, and tenant isolation.
 - Widgets, public submissions, widget.js, rate limiting, geo enrichment, background workers, and dashboard APIs are not yet implemented.
+
+---
+
+## Phase 2B — Widget Management & Delivery
+
+**Date**: October 5, 2026
+
+### Objective
+
+Implement tenant-scoped widget management CRUD, automatic version tracking, soft deactivation, dynamic embed snippet generation, public widget delivery (`GET /widget.js`), public configuration endpoint (`GET /api/v1/public/widgets/:id/config`) with origin allowlist CORS and ETag 304 revalidation, safe DOM rendering (XSS prevention), and comprehensive automated integration testing.
+
+### AI Assistance
+
+Antigravity was used as an AI pair programming and development assistant to write the database migration (`002_widget_domain.sql`), author repository abstractions (`widget.repository.ts`), Zod validation schemas (`widget.schema.ts`), business logic services (`widget.service.ts`), routes (`widget.routes.ts`, `widget-delivery.routes.ts`), embed loader script generator (`widget-loader.ts`), demo harness (`demo/index.html`), and automated integration test suites (`tests/widget-crud.test.ts`, `tests/widget-delivery.test.ts`). All code was reviewed, validated, and verified.
+
+### Implementation Decisions
+
+1. **Database Schema (`db/migrations/002_widget_domain.sql`)**:
+   - Created `widgets` table with UUIDv4 primary key (`gen_random_uuid()`), foreign key to `tenants(id) ON DELETE CASCADE`, `name` (VARCHAR), `is_active` (BOOLEAN DEFAULT true), `allowed_origins` (TEXT[] DEFAULT '{}'), `fields_config` (JSONB DEFAULT '[]'), `theme_config` (JSONB DEFAULT '{}'), `version` (INTEGER DEFAULT 1), and timestamps.
+   - Added index `idx_widgets_tenant_id` for efficient tenant-scoped filtering.
+2. **Tenant Scoping & Security**:
+   - All authenticated repository operations require `tenant_id` alongside `widgetId` (`WHERE id = $1 AND tenant_id = $2`). The client can never supply or override `tenantId`; it is strictly extracted from the verified JWT payload.
+   - Operations against non-existent widgets or widgets belonging to another tenant return HTTP `404 NOT_FOUND` with generic error messages, completely preventing entity enumeration.
+3. **Soft Deactivation vs Hard Deletion**:
+   - Deleting a widget (`DELETE /api/v1/widgets/:id`) performs a soft deactivation (`is_active = false, updated_at = NOW()`).
+   - Rationale: Preserves foreign key integrity and audit trails for future submission records, analytics, and asynchronous worker tasks tied to the widget ID while immediately revoking public configuration delivery (`404 NOT_FOUND`).
+4. **Versioning & Cache Revalidation**:
+   - Modifying a widget (`PATCH /api/v1/widgets/:id`) automatically increments `version = version + 1`.
+   - The public configuration endpoint computes a deterministic weak ETag: `W/"<id>-v<version>"`.
+   - Incoming `If-None-Match` headers are revalidated. If matching, the server returns HTTP `304 Not Modified` with zero body bytes, minimizing bandwidth.
+5. **Origin Allowlist & CORS**:
+   - Widget `allowed_origins` are strictly validated via Zod: must be valid `http://` or `https://` origins (protocol + host + optional port), rejecting paths and prohibiting wildcard `*`.
+   - The public configuration endpoint inspects the client `Origin` header. If matched against `allowed_origins`, it returns `Access-Control-Allow-Origin: <origin>`. If unmatched or disallowed, it returns HTTP `403 FORBIDDEN` and omits CORS allow headers.
+6. **Safe DOM Rendering (XSS Protection)**:
+   - The embeddable `widget.js` script dynamically creates DOM elements using native browser DOM APIs (`document.createElement`, `element.textContent`, `element.setAttribute`).
+   - Unsafe `innerHTML` is never used, guaranteeing that malicious user or tenant configuration cannot execute arbitrary JavaScript on host websites.
+7. **Scoped CSS Isolation**:
+   - All CSS styles in `widget.js` are prefixed with container selector `div[data-flyrank-widget="<id>"]` to ensure the widget coexists harmoniously with host website typography and styles without leaking globally.
+8. **Embed Snippet Generation**:
+   - Configured `WIDGET_BASE_URL` in environment variables (`http://localhost:4000` default) to ensure embed snippets are dynamic and configurable across environments without code changes.
+
+### Database Changes
+
+- Applied `db/migrations/002_widget_domain.sql` using `npm run db:migrate`.
+- Created `widgets` table and `idx_widgets_tenant_id` index.
+
+### Problems & Fixes
+
+1. **Parallel Test Race Conditions**:
+   - Initial parallel runs of `tests/widget-crud.test.ts` and `tests/widget-delivery.test.ts` had a test cleanup race condition where global tenant cleanup purged test records created by concurrently executing test suites.
+   - **Fix**: Updated all test suites to use unique, namespaced email and widget prefixes (`w_crud_` and `w_del_`) and scoped the `afterAll` cleanup strictly to tenants matching their respective test prefixes.
+2. **Windows CLI ETag Header Quoting**:
+   - In Windows PowerShell, `curl.exe` strips outer quotes from HTTP request headers (sending `If-None-Match: W/widget-id-v1` instead of `If-None-Match: W/"widget-id-v1"`).
+   - **Fix**: Enhanced the server ETag revalidation check to support both exact header string equality and normalized entity-tag matching (stripping weak prefix `W/` and quotes), adhering strictly to RFC HTTP caching specifications.
+
+### Verification Performed
+
+1. **Database Migration**:
+   - `npm run db:migrate` -> Applied `002_widget_domain.sql` successfully.
+2. **Type Checking & Linting**:
+   - `npm run typecheck` (`tsc --noEmit`) -> Exit 0 (zero errors).
+   - `npm run lint` (`eslint .`) -> Exit 0 (zero errors, zero warnings).
+   - `npm run format:check` (`prettier --check .`) -> Exit 0 (all files formatted).
+3. **Automated Integration Test Suite**:
+   - `npm test` (`vitest run`):
+     - `tests/health.test.ts` (1 test passed)
+     - `tests/db.test.ts` (2 tests passed)
+     - `tests/auth.test.ts` (13 tests passed)
+     - `tests/tenant-isolation.test.ts` (5 tests passed)
+     - `tests/widget-crud.test.ts` (15 tests passed)
+     - `tests/widget-delivery.test.ts` (11 tests passed)
+     - Total: **6 test files, 47 tests passed (100% pass rate)**.
+4. **Production Build**:
+   - `npm run build` (`tsc`) -> Exit 0 (`dist/` generated with zero errors).
+5. **Live Manual End-to-End Verification**:
+   - Registered tenant and authenticated to obtain Bearer JWT.
+   - Created widget with custom fields and theme (`POST /api/v1/widgets` -> 201 Created).
+   - Retrieved widget by ID (`GET /api/v1/widgets/:id` -> 200 OK).
+   - Listed tenant widgets (`GET /api/v1/widgets` -> 200 OK).
+   - Updated widget (`PATCH /api/v1/widgets/:id` -> 200 OK, version incremented from 1 to 2).
+   - Verified cross-tenant isolation (Tenant B token querying Tenant A widget -> 404 NOT_FOUND).
+   - Verified public delivery (`GET /widget.js?id=<id>` -> 200 OK, JavaScript loader returned with UUID validation).
+   - Verified public config with allowed origin (`GET /api/v1/public/widgets/:id/config` with `Origin: http://localhost:5000` -> 200 OK, ETag returned).
+   - Verified ETag revalidation (`If-None-Match: <etag>` -> 304 Not Modified).
+   - Verified disallowed origin (`Origin: http://malicious-site.com` -> 403 Forbidden).
+   - Verified soft deactivation (`DELETE /api/v1/widgets/:id` -> 200 OK, public config subsequently returns 404 Not Found).
+6. **Git Security & Secret Audit**:
+   - Confirmed `.env` is ignored by Git and never staged.
+   - Scanned diff for credentials, tokens, or private data — zero secrets present.
+
+### Known Limitations
+
+- Phase 2B only implements widget management and delivery.
+- Public lead submissions, submission ingestion pipeline, rate limiting, honeypot traps, geo-location enrichment, background workers, and dashboard APIs are deferred to subsequent phases.

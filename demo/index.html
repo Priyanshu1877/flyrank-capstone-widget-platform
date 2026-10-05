@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Customer Host Site — FlyRank Widget Demo</title>
+    <style>
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        margin: 0;
+        padding: 40px 20px;
+        background: #f3f4f6;
+        color: #1f2937;
+      }
+      .host-header {
+        max-width: 800px;
+        margin: 0 auto 30px;
+        background: #ffffff;
+        padding: 30px;
+        border-radius: 10px;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+      }
+      .badge {
+        display: inline-block;
+        padding: 4px 10px;
+        border-radius: 9999px;
+        font-size: 0.75rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        background: #dbeafe;
+        color: #1e40af;
+        margin-bottom: 12px;
+      }
+      h1 {
+        margin: 0 0 10px 0;
+        font-size: 1.75rem;
+      }
+      p {
+        color: #4b5563;
+        line-height: 1.5;
+      }
+      .widget-target-area {
+        max-width: 800px;
+        margin: 0 auto;
+      }
+      .controls {
+        margin-top: 20px;
+        padding: 16px;
+        background: #f9fafb;
+        border: 1px dashed #d1d5db;
+        border-radius: 8px;
+      }
+      input[type='text'] {
+        width: 320px;
+        padding: 8px 12px;
+        border: 1px solid #d1d5db;
+        border-radius: 6px;
+        font-family: monospace;
+      }
+      button {
+        padding: 8px 16px;
+        background: #2563eb;
+        color: #fff;
+        border: none;
+        border-radius: 6px;
+        cursor: pointer;
+        font-weight: 600;
+      }
+      button:hover {
+        background: #1d4ed8;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="host-header">
+      <span class="badge">Third-Party Host Simulation</span>
+      <h1>Welcome to Example Corp</h1>
+      <p>
+        This is a simulated external client website (Origin: <code>http://localhost:5000</code>).
+        The form below is injected and rendered cross-origin via the FlyRank embed script from
+        <code>http://localhost:4000/widget.js</code>.
+      </p>
+
+      <div class="controls">
+        <label for="widgetIdInput"><strong>Load Widget by ID:</strong></label
+        ><br />
+        <input type="text" id="widgetIdInput" placeholder="Enter Widget UUID..." />
+        <button onclick="injectWidget()">Load Widget</button>
+      </div>
+    </div>
+
+    <div class="widget-target-area" id="widgetMount">
+      <!-- Embed script will mount the isolated widget container here -->
+    </div>
+
+    <script>
+      function injectWidget() {
+        var id = document.getElementById('widgetIdInput').value.trim();
+        if (!id) {
+          alert('Please enter a valid widget UUID');
+          return;
+        }
+
+        var mount = document.getElementById('widgetMount');
+        mount.innerHTML = ''; // Clear prior mount
+
+        var s = document.createElement('script');
+        s.src = 'http://localhost:4000/widget.js?id=' + encodeURIComponent(id);
+        s.async = true;
+        s.defer = true;
+        mount.appendChild(s);
+      }
+
+      // Auto-load if widget id is present in URL hash or query e.g. index.html?id=UUID
+      var urlParams = new URLSearchParams(window.location.search);
+      var defaultId = urlParams.get('id');
+      if (defaultId) {
+        document.getElementById('widgetIdInput').value = defaultId;
+        injectWidget();
+      }
+    </script>
+  </body>
+</html>

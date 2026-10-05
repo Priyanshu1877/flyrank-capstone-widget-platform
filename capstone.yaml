@@ -1,6 +1,6 @@
 name: flyrank-capstone-widget-platform
 title: Embeddable Widget & Lead-Capture Platform
-phase: 'Phase 2A - Database, Authentication & Tenant Isolation'
+phase: 'Phase 2B - Widget Management & Delivery'
 track: Backend AI Engineering
 language: TypeScript
 runtime: Node.js
@@ -18,6 +18,7 @@ completed_phases:
   - phase_0
   - phase_1_design
   - phase_2a
+  - phase_2b
 features_implemented:
   - minimal_health_check
   - postgresql_connection_pool
@@ -26,3 +27,22 @@ features_implemented:
   - user_login_anti_enumeration
   - jwt_bearer_authentication
   - repository_tenant_isolation
+  - widget_crud
+  - widget_delivery
+  - widget_versioning
+  - widget_config_cache
+  - etag_support
+  - origin_allowlist
+feature_flags:
+  widget_crud: true
+  widget_delivery: true
+  widget_versioning: true
+  widget_config_cache: true
+  etag_support: true
+  origin_allowlist: true
+  submission_ingestion: false
+  rate_limiting: false
+  honeypot: false
+  geo_enrichment: false
+  background_jobs: false
+  dashboard: false

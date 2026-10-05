@@ -4,6 +4,8 @@ import { env } from './config/env.js';
 import { errorHandler } from './middleware/error.middleware.js';
 import { requestIdMiddleware } from './middleware/request-id.middleware.js';
 import { authRouter } from './modules/auth/auth.routes.js';
+import { widgetDeliveryRouter } from './modules/widgets/widget-delivery.routes.js';
+import { widgetRouter } from './modules/widgets/widget.routes.js';
 
 export const createApp = (): Express => {
   const app = express();
@@ -21,8 +23,14 @@ export const createApp = (): Express => {
     res.status(200).json({ status: 'ok' });
   });
 
+  // Public widget delivery endpoints (loader script & public config)
+  app.use(widgetDeliveryRouter);
+
   // Authentication & Identity domain routes
   app.use('/api/v1/auth', authRouter);
+
+  // Authenticated Widget Management routes
+  app.use('/api/v1/widgets', widgetRouter);
 
   // Central error handling middleware
   app.use(errorHandler);

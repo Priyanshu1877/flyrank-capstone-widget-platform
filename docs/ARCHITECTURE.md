@@ -1092,3 +1092,42 @@ To maintain a lean, robust, and reviewable architecture for the capstone, the fo
 - **No Third-Party CAPTCHA Services**: Replaced with effective, zero-friction honeypot fields to eliminate external API billing and privacy blockers.
 - **No Realtime WebSockets**: Dashboard metrics operate via standard paginated HTTP REST queries.
 - **No Advanced Targeting or AI Form Builders**: The core capstone prioritizes bulletproof reliability, isolation, and behavioral correctness over exploratory stretch features.
+
+---
+
+## Phase 2B Implementation Notes
+
+### Widget Domain Architecture & Design Decisions
+
+1. **Database Schema (`widgets`)**:
+   - `id`: UUID Primary Key (`gen_random_uuid()`).
+   - `tenant_id`: UUID Foreign Key referencing `tenants(id) ON DELETE CASCADE`.
+   - `name`: VARCHAR(255) NOT NULL.
+   - `is_active`: BOOLEAN NOT NULL DEFAULT true.
+   - `allowed_origins`: TEXT[] NOT NULL DEFAULT '{}'.
+   - `fields_config`: JSONB NOT NULL DEFAULT '[]'.
+   - `theme_config`: JSONB NOT NULL DEFAULT '{}'.
+   - `version`: INTEGER NOT NULL DEFAULT 1.
+   - Timestamps: `created_at`, `updated_at`.
+   - Index: `idx_widgets_tenant_id` for efficient tenant-scoped filtering.
+
+2. **Tenant Scoping & Deletion Policy**:
+   - All authenticated mutations and queries (`POST`, `GET`, `PATCH`, `DELETE`) are strictly parameterized with `tenant_id` extracted from verified JWT claims. A client can never supply or override `tenantId`.
+   - Cross-tenant queries return `404 NOT_FOUND` rather than revealing resource existence.
+   - Deletion (`DELETE /api/v1/widgets/:id`) implements **soft deactivation** (`is_active = false, updated_at = NOW()`). This preserves historical integrity for future submissions, metrics, and background jobs tied to the widget ID while immediately rendering the public configuration endpoint inactive (`404 NOT_FOUND`).
+
+3. **Versioning & Cache Revalidation**:
+   - Updates (`PATCH /api/v1/widgets/:id`) that modify `name`, `fields`, `theme`, `allowedOrigins`, or `isActive` automatically increment `version = version + 1`.
+   - The public configuration endpoint (`GET /api/v1/public/widgets/:id/config`) generates an ETag formatted as `W/"<widget_id>-v<version>"`.
+   - Clients supplying an `If-None-Match` header matching the current ETag receive HTTP `304 Not Modified` with zero response body, eliminating unnecessary network payload transfer.
+   - Cache-Control is set to `public, max-age=300, stale-while-revalidate=60` for public config, with `Vary: Origin, Accept-Encoding`.
+
+4. **Origin Validation & CORS**:
+   - `allowed_origins` entries are strictly validated via Zod: must be valid `http://` or `https://` origins (protocol + host + optional port), with no wildcard `*` allowed, and paths stripped/normalized.
+   - The public configuration endpoint checks the incoming request `Origin` header against the widget's `allowed_origins`.
+   - If origin is matched, `Access-Control-Allow-Origin: <origin>` is returned. If unauthorized, HTTP `403 FORBIDDEN` is returned and CORS headers are omitted.
+
+5. **Client Script Delivery & XSS Defense**:
+   - `GET /widget.js?id=<widgetId>` validates the `id` as a UUID to prevent path traversal or filesystem probing.
+   - The embedded JavaScript dynamically builds DOM elements using standard DOM APIs (`document.createElement`, `element.textContent`, `element.setAttribute`) and avoids `innerHTML` completely to eliminate XSS risks from tenant-configured field labels or values.
+   - Scoped container `div[data-flyrank-widget="<id>"]` isolates CSS rules from host page styles.

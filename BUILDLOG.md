@@ -827,3 +827,107 @@ Perform comprehensive hardening, security audits, database verification, behavio
 4. `npm run format:check`: Prettier verified.
 5. `npm run build`: Production build cleanly generated.
 6. Behavioral Probes 1 through 10 fully verified.
+
+---
+
+## AI Corrections / Validation
+
+This section documents specific instances where AI-generated output required correction,
+where developer decisions overrode AI suggestions, and where AI limitations were identified
+and mitigated during the capstone build.
+
+### 1. Port Collision — AI Generated Wrong DATABASE_URL (Phase 2A)
+
+**AI Error**: Antigravity initially generated `DATABASE_URL` pointing to port `5432` — the
+standard PostgreSQL default — without detecting that a native Windows PostgreSQL service was
+already running on that port.
+
+**Developer Correction**: Remapped the Docker container's host-side port to `5433`
+(`ports: "5433:5432"` in `docker-compose.yml`). Updated `DATABASE_URL`, `POSTGRES_PORT`,
+and `.env.example` to reflect port `5433`. Without this fix the server would have connected to
+the host's pre-existing PostgreSQL instance, not the project-specific Docker container.
+
+**Lesson**: AI cannot introspect the host machine's port occupancy; the developer must always
+verify port availability before accepting AI-generated connection strings.
+
+---
+
+### 2. Parallel Test Race Conditions — AI-Generated Cleanup Was Too Broad (Phase 2B)
+
+**AI Error**: Antigravity's initial test suite used a global `afterAll` cleanup that deleted all
+tenant records unconditionally. When `tests/widget-crud.test.ts` and `tests/widget-delivery.test.ts`
+ran in parallel, the shared cleanup deleted records still actively being used by the concurrent
+suite, causing intermittent assertion failures.
+
+**Developer Correction**: Changed all test suites to use per-suite email and widget name
+prefixes (`w_crud_`, `w_del_`, etc.). Updated `afterAll` blocks to delete tenants matching
+only their respective prefix (`WHERE email LIKE 'w_crud_%'`). This guaranteed complete
+test isolation regardless of execution order or concurrency.
+
+**Lesson**: AI test scaffolding defaults to simple global teardown, which breaks under parallel
+execution. The developer must enforce namespace-based isolation from the start.
+
+---
+
+### 3. ETag Header Parsing — AI Generated Overly Strict Matching (Phase 2B)
+
+**AI Error**: The initial ETag revalidation check performed exact string equality against the
+`If-None-Match` header. On Windows, `curl.exe` strips surrounding quotes from CLI-supplied
+header values, sending `W/widget-id-v1` instead of `W/"widget-id-v1"`. The AI implementation
+rejected valid revalidation requests from curl on Windows.
+
+**Developer Correction**: Enhanced the ETag comparison to normalize both the server ETag and
+the incoming header value — stripping the `W/` weak prefix and surrounding double-quotes before
+comparison — while still maintaining RFC 7232 semantics. Both quoted and unquoted ETag forms
+now correctly trigger `304 Not Modified`.
+
+**Lesson**: AI-generated HTTP header parsing often assumes a clean RFC-compliant client. Real
+tooling (especially on Windows) requires additional normalization.
+
+---
+
+### 4. innerHTML Usage in Error Paths — AI Introduced XSS Risk (Phase 3B / Final Hardening)
+
+**AI Error**: In Phase 3B, Antigravity's initial implementation of the `loadJobs` and
+`loadWidgets` functions in `public/dashboard/dashboard.js` used `innerHTML` to render dynamic
+error messages (e.g. `container.innerHTML = '<p class="error">Failed to load jobs.</p>'`).
+While the content appeared static, this pattern was architecturally inconsistent with the
+project's strict XSS prevention posture and could be exploited if error message strings were
+ever sourced from user-controlled input in a future change.
+
+**Developer Correction**: During the Final Hardening phase, replaced all error-path `innerHTML`
+usages with explicit DOM construction: `document.createElement('p')` with
+`element.className = 'error'` and `element.textContent = 'Failed to load ...'`. The
+`tests/dashboard-frontend.test.ts` test `"never uses innerHTML in dashboard.js"` was added as
+a static analysis regression guard to prevent future regressions.
+
+**Lesson**: AI-generated frontend code often defaults to `innerHTML` for convenience. All
+user-facing rendering paths — including error states — must be audited and hardened against
+injection, not just the "happy path" data rendering paths.
+
+---
+
+### 5. AI Cannot Verify Live Behavioral Probes — Developer Executed Manually
+
+**AI Limitation**: Antigravity cannot independently execute live HTTP requests against a running
+server, inspect actual database rows, or verify real cross-origin browser behavior. Throughout
+the capstone, AI-generated code was validated by the developer running the full test suite
+(`npm test`), executing live probe scripts against the running server on port 4000, and
+verifying cross-origin widget delivery from the demo harness on port 5000 in an actual browser.
+
+**Probes Executed by Developer**:
+
+- Cross-origin `POST /api/v1/public/submissions` from `http://localhost:5000` returning 201
+  with correct CORS headers.
+- Disallowed origin returning 403.
+- Honeypot field filled returning 400 SPAM_DETECTED with 0 DB rows.
+- Rate limit burst of 61 requests returning 429 with `Retry-After`.
+- Idempotency replay returning 200 with `idempotentReplay: true`.
+- Payload conflict on same key returning 409.
+- Geo fallback populating country/city correctly.
+- XSS payload `<script>alert("XSS")</script>` rendered as plain text in dashboard table and
+  detail modal.
+
+**Lesson**: AI pair programming significantly accelerates implementation but cannot substitute
+for developer-run end-to-end behavioral verification. The test suite and live probes are the
+ground truth.

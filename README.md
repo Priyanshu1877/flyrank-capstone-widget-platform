@@ -14,6 +14,85 @@ Phase 3B is implemented and verified. The platform provides an authenticated, re
 
 The complete, authoritative system architecture, entity relationship schema, REST API contracts, public submission pipeline, multi-tenancy model, security boundaries, and behavioral test strategies are detailed in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
+### Architecture Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                     WIDGET OWNER (Authenticated Tenant)                 │
+│                                                                         │
+│  Browser → POST /api/v1/auth/register  ─────────────────────────────┐  │
+│            POST /api/v1/auth/login                                   │  │
+│            GET  /api/v1/auth/me         (JWT Bearer Auth)           │  │
+│                                                                      ▼  │
+│          ┌───────────────────────────────────────────────────────────┐  │
+│          │              Widget Management API (Authenticated)        │  │
+│          │  POST /api/v1/widgets        ─── Create widget           │  │
+│          │  GET  /api/v1/widgets        ─── List widgets (tenant)   │  │
+│          │  GET  /api/v1/widgets/:id    ─── Get single widget       │  │
+│          │  PATCH /api/v1/widgets/:id   ─── Update + version++      │  │
+│          │  DELETE /api/v1/widgets/:id  ─── Soft deactivate         │  │
+│          └───────────────────────────────────────────────────────────┘  │
+│                                                                         │
+│  Dashboard SPA (GET /dashboard)                                         │
+│  GET /api/v1/dashboard/submissions        ─── Paginated lead list       │
+│  GET /api/v1/dashboard/submissions/stats  ─── Aggregate metrics         │
+│  GET /api/v1/dashboard/submissions/:id    ─── Lead detail               │
+│  GET /api/v1/dashboard/jobs               ─── Job queue monitor         │
+│  GET /api/v1/dashboard/widgets            ─── Widget list + snippets    │
+└──────────────────────────────────────────────┬──────────────────────────┘
+                                               │
+                      ┌────────────────────────▼────────────────────────┐
+                      │          Multi-Tenant PostgreSQL (port 5433)    │
+                      │                                                 │
+                      │  tenants ──< users                              │
+                      │  tenants ──< widgets ──< submissions            │
+                      │  tenants ──< jobs ──< job_failures              │
+                      │                                                 │
+                      │  Indexes: (tenant_id, created_at DESC)          │
+                      │           (widget_id, idempotency_key) UNIQUE   │
+                      │           (queue, run_at) WHERE status=pending  │
+                      └────────────────────────┬────────────────────────┘
+                                               │
+                      ┌────────────────────────▼────────────────────────┐
+                      │           Background Worker Process             │
+                      │           (npm run worker)                      │
+                      │                                                 │
+                      │  Poll jobs WHERE status = 'pending'             │
+                      │  FOR UPDATE SKIP LOCKED                         │
+                      │  Execute side-effects (notify/email stubs)      │
+                      │  Exponential backoff: 30s → 120s → 600s         │
+                      │  Dead-letter after 4 total attempts             │
+                      └─────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│                   CUSTOMER WEBSITE (Any Origin)                         │
+│                                                                         │
+│  <script src="http://localhost:4000/widget.js?id=<uuid>"></script>      │
+│       │                                                                 │
+│       ▼                                                                 │
+│  GET /widget.js?id=<uuid>           ─── Returns loader JS              │
+│       │                                                                 │
+│       ▼                                                                 │
+│  GET /api/v1/public/widgets/:id/config  (Origin allowlist check)        │
+│       │  ETag 304 revalidation supported                               │
+│       ▼                                                                 │
+│  Renders lead form via DOM APIs (zero innerHTML / zero XSS)             │
+│       │                                                                 │
+│       ▼  Visitor submits                                                │
+│  POST /api/v1/public/submissions                                        │
+│       │                                                                 │
+│       ├── CORS origin allowlist check (per-widget)                     │
+│       ├── 16 KB payload size guard (413 on oversize)                   │
+│       ├── Honeypot fields check (400 SPAM_DETECTED)                    │
+│       ├── IP rate limit: 60 req/min sliding window (429)               │
+│       ├── Dynamic field schema validation (Zod)                        │
+│       ├── Idempotency-Key deduplication (200 replay / 409 conflict)    │
+│       ├── Geo-enrichment: Provider A → Provider B → null degradation   │
+│       ├── Atomic DB insert (submissions + job in same transaction)      │
+│       └── 201 Created  {submissionId, createdAt, receivedAt}           │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
 Implemented & planned components:
 
 - **Tenant Management & Authentication (Implemented - Phase 2A)**: Secure JWT-based access for tenant administration with strict repository-level isolation.

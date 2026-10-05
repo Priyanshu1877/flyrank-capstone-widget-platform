@@ -7,6 +7,7 @@ runtime: Node.js
 framework: Express
 database: PostgreSQL
 run: npm run dev
+seed: npm run demo:seed
 test: npm test
 build: npm run build
 lint: npm run lint
@@ -78,3 +79,142 @@ feature_flags:
   geo_enrichment: true
   background_jobs: true
   dashboard: true
+
+endpoints:
+  # System
+  - method: GET
+    path: /health
+    auth: none
+    description: Health check — returns {"status":"ok"}
+
+  # Authentication
+  - method: POST
+    path: /api/v1/auth/register
+    auth: none
+    description: Register tenant + user; returns JWT
+  - method: POST
+    path: /api/v1/auth/login
+    auth: none
+    description: Authenticate; returns JWT; anti-enumeration 401
+  - method: GET
+    path: /api/v1/auth/me
+    auth: bearer
+    description: Resolve current identity from JWT
+
+  # Widget Management (authenticated, tenant-scoped)
+  - method: POST
+    path: /api/v1/widgets
+    auth: bearer
+    description: Create widget; returns embed snippet
+  - method: GET
+    path: /api/v1/widgets
+    auth: bearer
+    description: List all widgets for authenticated tenant
+  - method: GET
+    path: /api/v1/widgets/:id
+    auth: bearer
+    description: Get single widget (404 on cross-tenant)
+  - method: PATCH
+    path: /api/v1/widgets/:id
+    auth: bearer
+    description: Update widget config; auto-increments version
+  - method: DELETE
+    path: /api/v1/widgets/:id
+    auth: bearer
+    description: Soft-deactivate widget
+
+  # Public Widget Delivery (unauthenticated)
+  - method: GET
+    path: /widget.js
+    auth: none
+    description: Returns embeddable loader JavaScript for ?id=<uuid>
+  - method: GET
+    path: /api/v1/public/widgets/:id/config
+    auth: none
+    description: Public widget config; Origin allowlist CORS; ETag 304
+  - method: OPTIONS
+    path: /api/v1/public/submissions
+    auth: none
+    description: CORS preflight for public submission endpoint
+
+  # Public Submission (unauthenticated, cross-origin)
+  - method: POST
+    path: /api/v1/public/submissions
+    auth: none
+    description: >
+      Lead capture submission pipeline:
+      Origin allowlist → 16KB limit → honeypot → rate limit →
+      Zod field validation → idempotency → geo enrichment →
+      atomic DB insert + job creation → 201 Created
+
+  # Dashboard APIs (authenticated, tenant-scoped)
+  - method: GET
+    path: /api/v1/dashboard/submissions
+    auth: bearer
+    description: Paginated leads (page, limit, sort, widgetId, from, to)
+  - method: GET
+    path: /api/v1/dashboard/submissions/stats
+    auth: bearer
+    description: Aggregate stats — total, today, thisWeek, thisMonth, byWidget
+  - method: GET
+    path: /api/v1/dashboard/submissions/:id
+    auth: bearer
+    description: Single submission detail; 404 on cross-tenant
+  - method: GET
+    path: /api/v1/dashboard/jobs
+    auth: bearer
+    description: Paginated background job queue monitor
+  - method: GET
+    path: /api/v1/dashboard/widgets
+    auth: bearer
+    description: List tenant widgets for embed snippet panel
+
+  # Dashboard SPA
+  - method: GET
+    path: /dashboard
+    auth: none
+    description: Serves the authenticated Single-Page Application shell
+
+probes:
+  - id: probe_cross_origin_submission
+    description: Valid cross-origin POST returns 201 with CORS header
+    endpoint: POST /api/v1/public/submissions
+    expected_status: 201
+  - id: probe_disallowed_origin
+    description: Disallowed Origin header returns 403 FORBIDDEN
+    endpoint: POST /api/v1/public/submissions
+    expected_status: 403
+  - id: probe_payload_too_large
+    description: Body > 16 KB returns 413 PAYLOAD_TOO_LARGE
+    endpoint: POST /api/v1/public/submissions
+    expected_status: 413
+  - id: probe_honeypot
+    description: Request with _hp_title filled returns 400 SPAM_DETECTED
+    endpoint: POST /api/v1/public/submissions
+    expected_status: 400
+  - id: probe_rate_limit
+    description: >
+      Burst of 61+ requests from same IP within 60s returns 429
+      RATE_LIMIT_EXCEEDED with Retry-After header
+    endpoint: POST /api/v1/public/submissions
+    expected_status: 429
+  - id: probe_idempotency_replay
+    description: Identical Idempotency-Key replay returns 200 with idempotentReplay=true
+    endpoint: POST /api/v1/public/submissions
+    expected_status: 200
+  - id: probe_idempotency_conflict
+    description: Same Idempotency-Key with changed payload returns 409 IDEMPOTENCY_CONFLICT
+    endpoint: POST /api/v1/public/submissions
+    expected_status: 409
+  - id: probe_geo_fallback
+    description: Provider A failure triggers Provider B; both fail → geo_country NULL, submission still 201
+    endpoint: POST /api/v1/public/submissions
+    expected_status: 201
+  - id: probe_tenant_isolation
+    description: Dashboard query by Tenant B for Tenant A resource returns 404
+    endpoint: GET /api/v1/dashboard/submissions/:id
+    expected_status: 404
+  - id: probe_background_job_outbox
+    description: Successful submission creates a pending job in the same DB transaction
+    endpoint: GET /api/v1/dashboard/jobs
+    expected_status: 200

@@ -6,29 +6,31 @@ The FlyRank Embeddable Widget & Lead-Capture Platform is a multi-tenant backend 
 
 ## Current Status
 
-**Phase 1 — Technical Architecture & Design Completed**
+**Phase 2A — Database, Authentication & Tenant Isolation Completed**
 
-The repository contains the foundation and the authoritative architectural design specification for Phase 2 implementation. In accordance with Phase 1 constraints, no business logic, database migrations, authentication logic, widget rendering, submission handlers, or background workers have been implemented yet.
+Phase 2A is implemented and verified. The platform includes a PostgreSQL connection pool, an automated SQL migration runner, tenant and user relational schemas, password hashing with bcrypt, stateless JWT bearer token authentication, request ID tracing, standardized JSON error responses, and strict repository-level tenant isolation.
 
 ## System Architecture & Specifications
 
 The complete, authoritative system architecture, entity relationship schema, REST API contracts, public submission pipeline, multi-tenancy model, security boundaries, and behavioral test strategies are detailed in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
-Summary of planned components:
+Implemented & planned components:
 
-- **Tenant Management & Authentication**: Secure JWT-based access for tenant administration with strict repository-level isolation.
-- **Widget Service**: Generation, customization, and public serving of lightweight embed snippets with versioning and HTTP caching.
-- **Public Submission Gateway**: Cross-origin endpoint with dynamic CORS matching, 16 KB payload limits, schema validation, rate limiting, and honeypot spam protection.
-- **Geo-Enrichment**: Strategy pattern with sequential fallback (Provider A -> Provider B -> Graceful Nil Degradation).
-- **Relational Storage**: PostgreSQL 16 schema with UUIDv4 primary keys, idempotency partial unique indexes, and tenant-scoped query performance indexes.
-- **Async Processing**: Transactional outbox job queue (`jobs` table) with worker row locking (`FOR UPDATE SKIP LOCKED`), exponential backoff retries, and dead-letter isolation (`job_failures`).
-- **Tenant Dashboard**: Scoped analytical endpoints for lead tracking, submission trends, and geographic breakdown.
+- **Tenant Management & Authentication (Implemented)**: Secure JWT-based access for tenant administration with strict repository-level isolation.
+- **Relational Storage (Implemented)**: PostgreSQL 16 schema with UUIDv4 primary keys, connection pooling, and automated migration runner.
+- **Widget Service (Planned Phase 2B)**: Generation, customization, and public serving of lightweight embed snippets with versioning and HTTP caching.
+- **Public Submission Gateway (Planned Phase 2C)**: Cross-origin endpoint with dynamic CORS matching, 16 KB payload limits, schema validation, rate limiting, and honeypot spam protection.
+- **Geo-Enrichment (Planned Phase 2D)**: Strategy pattern with sequential fallback (Provider A -> Provider B -> Graceful Nil Degradation).
+- **Async Processing (Planned Phase 2E)**: Transactional outbox job queue (`jobs` table) with worker row locking (`FOR UPDATE SKIP LOCKED`), exponential backoff retries, and dead-letter isolation (`job_failures`).
+- **Tenant Dashboard (Planned Phase 2F)**: Scoped analytical endpoints for lead tracking, submission trends, and geographic breakdown.
 
 ## Tech Stack
 
 - **Runtime & Language**: Node.js (v20+) with TypeScript (strict mode)
 - **Framework**: Express
-- **Database**: PostgreSQL 16 (via Docker Compose)
+- **Database**: PostgreSQL 16 (via Docker Compose, port 5433 to avoid host collisions)
+- **Password Hashing**: bcryptjs (10 salt rounds)
+- **Authentication**: Stateless JSON Web Tokens (jsonwebtoken)
 - **Validation**: Zod
 - **Testing**: Vitest & Supertest
 - **Code Quality**: ESLint (Flat Config) & Prettier
@@ -70,7 +72,15 @@ docker compose down
 npm install
 ```
 
-### 4. Run Development Server
+### 4. Execute Database Migrations
+
+Run the SQL migration runner to apply pending schema migrations:
+
+```bash
+npm run db:migrate
+```
+
+### 5. Run Development Server
 
 ```bash
 npm run dev
@@ -78,13 +88,15 @@ npm run dev
 
 The server will start at `http://localhost:4000`.
 
-### 5. Run Tests
+### 6. Run Tests
+
+Execute the comprehensive Vitest integration suite:
 
 ```bash
 npm test
 ```
 
-### 6. Type Check, Lint, and Format
+### 7. Type Check, Lint, and Format
 
 ```bash
 npm run typecheck
@@ -92,12 +104,46 @@ npm run lint
 npm run format:check
 ```
 
-### 7. Production Build and Run
+### 8. Production Build and Run
 
 ```bash
 npm run build
 npm start
 ```
+
+## Authentication & Identity Endpoints
+
+### 1. Register a Tenant and User
+
+`POST /api/v1/auth/register`
+
+```json
+{
+  "name": "Acme SaaS",
+  "email": "owner@acme.com",
+  "password": "StrongPassword123!"
+}
+```
+
+Creates tenant and user inside a single database transaction, hashes password with bcrypt, and returns user, tenant, and JWT. Plaintext passwords or password hashes are never returned.
+
+### 2. Authenticate / Login
+
+`POST /api/v1/auth/login`
+
+```json
+{
+  "email": "owner@acme.com",
+  "password": "StrongPassword123!"
+}
+```
+
+Verifies credentials in constant time. Returns safe generic 401 error on missing account or invalid password to prevent account enumeration.
+
+### 3. View Current Identity Context
+
+`GET /api/v1/auth/me`
+Requires `Authorization: Bearer <token>` header. Resolves tenant context exclusively from the verified JWT claims; client-supplied tenant identifiers are rejected.
 
 ## Project Structure
 

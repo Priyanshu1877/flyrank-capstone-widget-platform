@@ -1,6 +1,6 @@
 name: flyrank-capstone-widget-platform
 title: Embeddable Widget & Lead-Capture Platform
-phase: 'Phase 1 - Design'
+phase: 'Phase 2A - Database, Authentication & Tenant Isolation'
 track: Backend AI Engineering
 language: TypeScript
 runtime: Node.js
@@ -17,5 +17,12 @@ status: in-progress
 completed_phases:
   - phase_0
   - phase_1_design
+  - phase_2a
 features_implemented:
   - minimal_health_check
+  - postgresql_connection_pool
+  - sql_migration_runner
+  - user_registration_transaction
+  - user_login_anti_enumeration
+  - jwt_bearer_authentication
+  - repository_tenant_isolation

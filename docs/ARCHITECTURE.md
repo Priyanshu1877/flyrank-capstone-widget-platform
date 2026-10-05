@@ -2,8 +2,25 @@
 
 ## Status
 
-**Phase 1 — Technical Architecture & Design Specification (COMPLETED)**  
-_This document serves as the implementation contract for Phase 2. No business logic, migrations, or application code are implemented in this phase._
+**Phase 2A — Database, Authentication & Tenant Isolation (IMPLEMENTED)**  
+_Phase 2A delivers the database connection pool, migration system, tenants and users tables, password hashing, JWT authentication, and strict repository-level tenant isolation._
+
+---
+
+## Phase 2A Implementation Notes
+
+Phase 2A was implemented strictly in accordance with the Phase 1 specifications with zero architectural deviations:
+
+- **Database Engine**: PostgreSQL 16 via Docker Compose. Host port configured to `5433` (container port `5432`) to eliminate port collisions with any pre-existing host database services.
+- **Migration Engine**: Minimal, robust TypeScript migration runner (`db/migrate.ts`) tracking applied SQL files in `schema_migrations`. Initial migration `001_identity_domain.sql` establishes `tenants` and `users` tables with UUID primary keys and foreign keys.
+- **Password Security**: Implemented via `bcryptjs` with 10 salt rounds. Plaintext passwords and `password_hash` are never stored plaintext, logged, or exposed in API responses.
+- **Authentication Routes**:
+  - `POST /api/v1/auth/register`: Atomic transaction creating tenant, hashing password, and creating owner user.
+  - `POST /api/v1/auth/login`: Constant-time password comparison; returns generic 401 on missing email or incorrect password (anti-enumeration).
+  - `GET /api/v1/auth/me`: Protected by `requireAuth` middleware, returning verified user and tenant profiles.
+- **Tenant Context & Isolation**:
+  - Authenticated context `req.auth = { userId, tenantId, role }` is derived exclusively from cryptographically verified JWT bearer tokens.
+  - Repository layer enforces strict tenant scoping (`WHERE tenant_id = $2`); client-supplied tenant identifiers are never trusted.
 
 ---
 

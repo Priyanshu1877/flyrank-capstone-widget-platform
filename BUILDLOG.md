@@ -140,3 +140,72 @@ Antigravity was utilized as an AI pair programming and development assistant dur
 
 - Architecture and design phase only.
 - No business logic, migrations, database tables, widget rendering scripts, submission endpoints, or background workers have been implemented yet.
+
+---
+
+## Phase 2A — Database, Authentication & Tenant Isolation
+
+**Date**: October 5, 2026
+
+### Objective
+
+Implement the relational database foundation, SQL migration pipeline, PostgreSQL connection pool, tenants and users schema, password hashing, user registration with transaction rollback, authentication with anti-enumeration login, stateless JWT bearer token authentication, request ID tracing, and strict repository-level tenant isolation.
+
+### AI Assistance
+
+Antigravity was used as an AI pair programming and development assistant to write the database migration runner, author migration SQL, scaffold repository abstractions, implement authentication services, configure security middleware, and construct automated Vitest integration test suites. All dependencies, cryptographic implementations, and database queries were reviewed and verified.
+
+### Implementation Decisions
+
+1. **Dependency Selection**:
+   - `pg` & `@types/pg`: Added as the official, lightweight PostgreSQL client pool. Provides direct parameterized queries and transaction control without heavy ORM overhead.
+   - `bcryptjs` & `@types/bcryptjs`: Selected for secure password hashing with 10 salt rounds. Pure JavaScript implementation avoids native C++ compilation toolchain issues on Windows.
+   - `jsonwebtoken` & `@types/jsonwebtoken`: Added for standard stateless JWT generation and verification.
+2. **PostgreSQL Port Remapping**:
+   - During initial verification, discovered that a native Windows PostgreSQL service was running locally on port 5432.
+   - To avoid port collision without interfering with host services, remapped the Docker container's exposed host port to `5433` (container port remains `5432`) and updated `DATABASE_URL` and `POSTGRES_PORT` in `.env` and `.env.example`.
+3. **Migration System**:
+   - Implemented a lightweight, deterministic TypeScript migration runner (`db/migrate.ts`) that records applied migrations in a `schema_migrations` table and applies SQL files inside transactions.
+   - Created `db/migrations/001_identity_domain.sql` defining `tenants` and `users` tables with UUIDv4 primary keys, timestamps, unique constraints, and foreign key cascades.
+4. **Registration Transaction Integrity**:
+   - Implemented `POST /api/v1/auth/register` with atomic transaction boundaries (`BEGIN` -> create tenant -> hash password -> create user -> `COMMIT`).
+   - Verified that any downstream failure in user creation triggers an immediate `ROLLBACK`, guaranteeing zero orphan tenant records.
+5. **Security & Anti-Enumeration**:
+   - `password_hash` is stripped from all domain and API responses.
+   - Login endpoint (`POST /api/v1/auth/login`) returns an identical generic `401 Unauthorized` ("Invalid email or password") regardless of whether the email was registered, preventing account enumeration.
+6. **Tenant Context & Repository Isolation**:
+   - Created `requireAuth` middleware verifying Bearer tokens and attaching `{ userId, tenantId, role }` to `req.auth`.
+   - Created `UserRepository` with `findByIdAndTenant(id, tenantId)` requiring `WHERE id = $1 AND tenant_id = $2`, preventing cross-tenant access.
+
+### Verification Performed
+
+1. **Docker Compose & Database**:
+   - `docker compose config` -> Exit 0.
+   - `docker compose ps` -> `flyrank_postgres` container healthy and listening on port 5433.
+2. **Database Migration Runner**:
+   - `npm run db:migrate` -> Applied `001_identity_domain.sql` successfully.
+   - Second execution verified migration idempotency (0 new migrations applied).
+   - Inspected tables in PostgreSQL: `schema_migrations`, `tenants`, `users` created.
+3. **Type Checking & Linting**:
+   - `npm run typecheck` (`tsc --noEmit`) -> Exit 0 (zero errors).
+   - `npm run lint` (`eslint .`) -> Exit 0 (zero errors, zero warnings).
+4. **Automated Integration Test Suite**:
+   - `npm test` (`vitest run`):
+     - `tests/health.test.ts` (1 test passed)
+     - `tests/db.test.ts` (2 tests passed)
+     - `tests/auth.test.ts` (13 tests passed, including transaction rollback test)
+     - `tests/tenant-isolation.test.ts` (5 tests passed, validating User A / User B isolation)
+     - Total: **4 test files, 21 tests passed (100% pass rate)**.
+5. **Live Manual API Verification**:
+   - Tested `POST /api/v1/auth/register` with `Invoke-RestMethod`: Status 201, safe user and tenant returned, token generated.
+   - Tested `POST /api/v1/auth/login`: Status 200, JWT returned, password_hash excluded.
+   - Tested `GET /api/v1/auth/me` with Bearer token: Status 200, correct tenant context resolved.
+   - Tested `GET /api/v1/auth/me` without token: Status 401 with standard error envelope.
+6. **Git Security Check**:
+   - `git status --ignored`: Confirmed `.env` is ignored by Git and never staged.
+   - Scanned diff for credentials, tokens, or plaintext passwords — zero secrets present.
+
+### Known Limitations
+
+- Phase 2A only covers database foundation, authentication, and tenant isolation.
+- Widgets, public submissions, widget.js, rate limiting, geo enrichment, background workers, and dashboard APIs are not yet implemented.
